@@ -13,6 +13,8 @@ func RegisterDashboardRoutes(r *gin.RouterGroup) {
 	g := r.Group("/dashboard")
 	{
 		g.GET("/overview", GetSystemOverview)
+		g.GET("/growth", GetGrowthMetrics)
+		g.GET("/growth/trend", GetGrowthTrend)
 		g.GET("/usage", GetUsageStatistics)
 		g.GET("/models", GetModelUsage)
 		g.GET("/trends/daily", GetDailyTrends)
@@ -33,6 +35,39 @@ func GetSystemOverview(c *gin.Context) {
 	svc := service.NewDashboardService()
 
 	data, err := svc.GetSystemOverview(period, noCache)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+// GET /api/dashboard/growth
+func GetGrowthMetrics(c *gin.Context) {
+	noCache := c.Query("no_cache") == "true"
+	svc := service.NewDashboardService()
+
+	data, err := svc.GetGrowthMetrics(noCache)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+// GET /api/dashboard/growth/trend
+func GetGrowthTrend(c *gin.Context) {
+	// Anything that is not "monthly" is the 30-day series. An unrecognised
+	// value returning the default beats returning an error for a chart that
+	// only ever has two states.
+	granularity := c.DefaultQuery("granularity", "daily")
+	if granularity != "monthly" {
+		granularity = "daily"
+	}
+	noCache := c.Query("no_cache") == "true"
+	svc := service.NewDashboardService()
+
+	data, err := svc.GetGrowthTrend(granularity, noCache)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
 		return

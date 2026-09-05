@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import { TrendChart } from './TrendChart'
+import { GrowthPanel } from './GrowthPanel'
 import { Users, Key, Server, Box, Ticket, Zap, Crown, Loader2, RefreshCw, Activity, BarChart3, Clock, Database, Timer, ChevronDown, Hash, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
 import { Button } from './ui/button'
@@ -631,6 +632,11 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Growth: who signed up, who paid, how much came in. Ahead of the
+          resource counters on purpose — it answers the questions that get asked
+          first, and unlike everything below it, it does not depend on `logs`. */}
+      <GrowthPanel refreshToken={lastRefreshTime?.getTime()} />
 
       {/* System Overview Section */}
       <section className="space-y-4">
