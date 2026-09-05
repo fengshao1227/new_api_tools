@@ -2,6 +2,10 @@ package service
 
 import (
 	"fmt"
+	"math"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/new-api-tools/backend/internal/cache"
@@ -29,6 +33,44 @@ import (
 // than invent revenue, which is the safe direction for a number an operator
 // makes decisions on.
 const topUpSettledStatus = "success"
+
+// `top_ups` has no currency column, and the rails settle in two of them: the
+// Chinese ones take CNY, the card ones take USD. Summing the raw column treats
+// a ¥70 order as a $70 one — on the real data that reported $250 of revenue
+// where $70 came in, because every settled order is the same $10 purchase paid
+// on a different rail.
+//
+// The rail is the only evidence in the row, and it is sufficient: epay is the
+// CNY gateway, and alipay/wxpay are its methods (the orders imported from the
+// portal carry the method without the provider). Everything else is a card
+// processor quoting USD. An unrecognised rail is counted as USD rather than
+// dropped: a new card processor is the likely case, and under-reporting a rail
+// that does exist is worse than the rounding.
+const cnyRailPredicate = "(payment_method IN ('alipay', 'wxpay') OR payment_provider = 'epay')"
+
+// defaultCNYPerUSD matches what this deployment charges: NewAPI's own `Price`
+// option is 7, and every settled CNY order is ¥70 against a $10 product. Set
+// CNY_PER_USD if the two ever diverge — keep it equal to `Price`, or the
+// dashboard and the checkout page will quote different revenue for one sale.
+const defaultCNYPerUSD = 7.0
+
+func cnyPerUSD() float64 {
+	raw := strings.TrimSpace(os.Getenv("CNY_PER_USD"))
+	if raw == "" {
+		return defaultCNYPerUSD
+	}
+	rate, err := strconv.ParseFloat(raw, 64)
+	if err != nil || rate <= 0 || math.IsInf(rate, 0) {
+		return defaultCNYPerUSD
+	}
+	return rate
+}
+
+// revenueUSDExpr converts a row's `money` to USD. Built with a parsed float, so
+// the rate cannot carry anything but a number into the statement.
+func revenueUSDExpr() string {
+	return fmt.Sprintf("(CASE WHEN %s THEN money / %g ELSE money END)", cnyRailPredicate, cnyPerUSD())
+}
 
 // paidAtExpr is when a top-up actually settled. complete_time is the settlement
 // stamp, but rows completed by paths that predate it — and manually completed
@@ -88,25 +130,29 @@ func (s *DashboardService) GetGrowthMetrics(noCache bool) (map[string]interface{
 	// this month, and counting only first payments would make the month figure
 	// drift below reality as the product ages. The trend series below does
 	// count first payments, because there the question is growth.
+	usd := revenueUSDExpr()
 	payQuery := s.db.RebindQuery(fmt.Sprintf(`
 		SELECT COUNT(DISTINCT user_id) AS total_payers,
 			COUNT(DISTINCT CASE WHEN %s >= ? THEN user_id END) AS month_payers,
-			COALESCE(SUM(money), 0) AS total_revenue,
-			COALESCE(SUM(CASE WHEN %s >= ? THEN money ELSE 0 END), 0) AS month_revenue,
+			COALESCE(SUM(%s), 0) AS total_revenue,
+			COALESCE(SUM(CASE WHEN %s >= ? THEN %s ELSE 0 END), 0) AS month_revenue,
+			COALESCE(SUM(CASE WHEN %s THEN money ELSE 0 END), 0) AS total_revenue_cny,
 			COUNT(*) AS settled_orders
 		FROM top_ups
-		WHERE status = ?`, paidAtExpr, paidAtExpr))
+		WHERE status = ?`, paidAtExpr, usd, paidAtExpr, usd, cnyRailPredicate))
 	if row, err := s.db.QueryOneWithTimeout(15*time.Second, payQuery, monthStart, monthStart, topUpSettledStatus); err == nil && row != nil {
 		result["total_payers"] = toFloat64(row["total_payers"])
 		result["month_payers"] = toFloat64(row["month_payers"])
 		result["total_revenue"] = toFloat64(row["total_revenue"])
 		result["month_revenue"] = toFloat64(row["month_revenue"])
+		result["total_revenue_cny"] = toFloat64(row["total_revenue_cny"])
 		result["settled_orders"] = toFloat64(row["settled_orders"])
 	} else if err != nil {
 		return nil, err
 	}
 
 	result["month_start"] = monthStart
+	result["cny_per_usd"] = cnyPerUSD()
 
 	cm.Set(cacheKey, result, 3*time.Minute)
 	return result, nil
@@ -171,10 +217,10 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 
 	revenueExpr := dayBucket(paidAtExpr, tzOffset)
 	revenueQuery := s.db.RebindQuery(fmt.Sprintf(`
-		SELECT %s AS day_group, COALESCE(SUM(money), 0) AS revenue, COUNT(*) AS orders
+		SELECT %s AS day_group, COALESCE(SUM(%s), 0) AS revenue, COUNT(*) AS orders
 		FROM top_ups
 		WHERE status = ? AND %s >= ?
-		GROUP BY %s`, revenueExpr, paidAtExpr, revenueExpr))
+		GROUP BY %s`, revenueExpr, revenueUSDExpr(), paidAtExpr, revenueExpr))
 	rows, err = s.db.QueryWithTimeout(30*time.Second, revenueQuery, topUpSettledStatus, startUnix)
 	if err != nil {
 		return nil, err

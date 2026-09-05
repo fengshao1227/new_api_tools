@@ -12,8 +12,17 @@ interface GrowthMetrics {
   month_payers: number
   total_revenue: number
   month_revenue: number
+  total_revenue_cny: number
+  cny_per_usd: number
   settled_orders: number
 }
+
+const cny = new Intl.NumberFormat('zh-CN', {
+  style: 'currency',
+  currency: 'CNY',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
 
 interface GrowthPoint {
   date: string
@@ -205,7 +214,17 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
             icon={DollarSign}
             loading={loading}
             money
-            hint={metrics ? `${metrics.settled_orders} 笔已结算订单` : undefined}
+            // Say that a conversion happened and at what rate. The alternative
+            // is a USD figure that quietly contains yuan, which is the bug this
+            // card was changed to fix.
+            hint={
+              metrics
+                ? `${metrics.settled_orders} 笔已结算` +
+                  (metrics.total_revenue_cny > 0
+                    ? ` · 其中 ${cny.format(metrics.total_revenue_cny)} 按 ¥${metrics.cny_per_usd}/$ 折算`
+                    : '')
+                : undefined
+            }
           />
         </div>
       </section>
