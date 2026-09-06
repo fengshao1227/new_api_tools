@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
 import { BarChart3, TrendingUp, Calendar } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { DASHBOARD_TEXT, localeOf, type DashboardLang, type PeriodKey } from '../lib/dashboardI18n'
 
 interface DailyTrend {
   date?: string
@@ -15,12 +16,15 @@ interface DailyTrend {
 
 interface TrendChartProps {
   data: DailyTrend[]
-  period: string
+  period: PeriodKey
   loading?: boolean
   totalRequests?: number
+  lang: DashboardLang
 }
 
-export function TrendChart({ data, period, loading, totalRequests }: TrendChartProps) {
+export function TrendChart({ data, period, loading, totalRequests, lang }: TrendChartProps) {
+  const t = DASHBOARD_TEXT[lang]
+  const locale = localeOf(lang)
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   // 浮层用 portal 渲染到 body，避开 Card 的 overflow-hidden 裁切
   const barTopsRef = useRef<Map<number, HTMLDivElement>>(new Map())
@@ -59,9 +63,9 @@ export function TrendChart({ data, period, loading, totalRequests }: TrendChartP
       if (d.timestamp) {
         const date = new Date(d.timestamp * 1000)
         if (isHourlyMode) {
-          displayDate = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+          displayDate = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false })
         } else {
-          displayDate = date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+          displayDate = date.toLocaleDateString(locale, { month: '2-digit', day: '2-digit' })
         }
       } else {
         // Fallback to server string with proper formatting
@@ -88,7 +92,7 @@ export function TrendChart({ data, period, loading, totalRequests }: TrendChartP
         x: i
       }
     })
-  }, [data, isHourlyMode])
+  }, [data, isHourlyMode, locale])
 
   const maxVal = useMemo(() => Math.max(...data.map(d => d.request_count), 5), [data])
 
@@ -116,17 +120,15 @@ export function TrendChart({ data, period, loading, totalRequests }: TrendChartP
               <div className="p-2 bg-primary/10 rounded-lg text-primary">
                 <TrendingUp className="w-5 h-5" />
               </div>
-              {isHourlyMode ? '每小时请求趋势' : '每日请求趋势'}
+              {isHourlyMode ? t.hourlyTrend : t.dailyTrend}
             </CardTitle>
-            <CardDescription>
-              {period === '24h' ? '24小时' : period === '3d' ? '近3天' : period === '7d' ? '近7天' : '近14天'}数据概览
-            </CardDescription>
+            <CardDescription>{t.trendDesc[period]}</CardDescription>
           </div>
           <div className="text-right hidden sm:block">
             <div className="text-2xl font-bold text-primary">
-              {(totalRequests ?? data.reduce((acc, curr) => acc + Number(curr.request_count), 0)).toLocaleString()}
+              {(totalRequests ?? data.reduce((acc, curr) => acc + Number(curr.request_count), 0)).toLocaleString(locale)}
             </div>
-            <div className="text-xs text-muted-foreground font-medium">请求总数</div>
+            <div className="text-xs text-muted-foreground font-medium">{t.trendTotal}</div>
           </div>
         </div>
       </CardHeader>
@@ -210,7 +212,7 @@ export function TrendChart({ data, period, loading, totalRequests }: TrendChartP
         ) : (
           <div className="h-[250px] flex flex-col items-center justify-center text-muted-foreground bg-muted/5 rounded-xl border border-dashed border-muted">
             <BarChart3 className="w-10 h-10 mb-2 opacity-20" />
-            <p className="text-sm">暂无趋势数据</p>
+            <p className="text-sm">{t.noTrendData}</p>
           </div>
         )}
       </CardContent>
@@ -222,6 +224,7 @@ export function TrendChart({ data, period, loading, totalRequests }: TrendChartP
           isHourlyMode={isHourlyMode}
           anchorTop={tipRect.top}
           anchorLeft={tipRect.left}
+          lang={lang}
         />,
         document.body
       )}
@@ -241,9 +244,12 @@ interface FloatingBarTooltipProps {
   isHourlyMode: boolean
   anchorTop: number    // 柱子顶端在视口的 top
   anchorLeft: number   // 柱子顶端在视口的 left（中心）
+  lang: DashboardLang
 }
 
-function FloatingBarTooltip({ item, isHourlyMode, anchorTop, anchorLeft }: FloatingBarTooltipProps) {
+function FloatingBarTooltip({ item, isHourlyMode, anchorTop, anchorLeft, lang }: FloatingBarTooltipProps) {
+  const t = DASHBOARD_TEXT[lang]
+  const locale = localeOf(lang)
   const ref = useRef<HTMLDivElement>(null)
   const [adjusted, setAdjusted] = useState<{ top: number; left: number } | null>(null)
 
@@ -283,24 +289,24 @@ function FloatingBarTooltip({ item, isHourlyMode, anchorTop, anchorLeft }: Float
         <span className="truncate">
           {item.timestamp ? (
             isHourlyMode
-              ? new Date(item.timestamp * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-              : new Date(item.timestamp * 1000).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+              ? new Date(item.timestamp * 1000).toLocaleString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+              : new Date(item.timestamp * 1000).toLocaleDateString(locale, { year: 'numeric', month: '2-digit', day: '2-digit' })
           ) : (isHourlyMode ? (item.hour || '') : (item.date || ''))}
         </span>
       </div>
       <div className="space-y-1.5 mt-2">
         <div className="flex justify-between items-center gap-6">
-          <span className="text-muted-foreground">请求数</span>
-          <span className="font-mono font-bold tabular-nums">{Number(item.request_count).toLocaleString()}</span>
+          <span className="text-muted-foreground">{t.tipRequests}</span>
+          <span className="font-mono font-bold tabular-nums">{Number(item.request_count).toLocaleString(locale)}</span>
         </div>
         {item.unique_users !== undefined && (
           <div className="flex justify-between items-center gap-6">
-            <span className="text-muted-foreground">用户数</span>
+            <span className="text-muted-foreground">{t.tipUsers}</span>
             <span className="font-mono tabular-nums">{item.unique_users}</span>
           </div>
         )}
         <div className="flex justify-between items-center gap-6">
-          <span className="text-muted-foreground">消耗</span>
+          <span className="text-muted-foreground">{t.tipSpend}</span>
           <span className="font-mono tabular-nums">${(Number(item.quota_used) / 500000).toFixed(4)}</span>
         </div>
       </div>

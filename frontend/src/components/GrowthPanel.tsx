@@ -4,6 +4,15 @@ import { useAuth } from '../contexts/AuthContext'
 import { UserPlus, Users, CreditCard, UserCheck, Wallet, DollarSign, TrendingUp, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { cn } from '../lib/utils'
+import {
+  DASHBOARD_TEXT,
+  formatCny,
+  formatTrendLabel,
+  localeOf,
+  usd,
+  usdAxis,
+  type DashboardLang,
+} from '../lib/dashboardI18n'
 
 interface GrowthMetrics {
   total_users: number
@@ -17,13 +26,6 @@ interface GrowthMetrics {
   settled_orders: number
 }
 
-const cny = new Intl.NumberFormat('zh-CN', {
-  style: 'currency',
-  currency: 'CNY',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
-
 interface GrowthPoint {
   date: string
   new_users: number
@@ -34,24 +36,11 @@ interface GrowthPoint {
 
 type Granularity = 'daily' | 'monthly'
 
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
-
-// Whole numbers on the axis and compact ones in the table: a revenue axis
-// labelled $12.50 and $12.75 says nothing an operator can act on.
-const axisCurrency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-})
-
-export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
+export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lang: DashboardLang }) {
   const { token } = useAuth()
   const apiUrl = import.meta.env.VITE_API_URL || ''
+  const t = DASHBOARD_TEXT[lang]
+  const locale = localeOf(lang)
 
   const [metrics, setMetrics] = useState<GrowthMetrics | null>(null)
   const [trend, setTrend] = useState<GrowthPoint[]>([])
@@ -94,11 +83,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
   }, [load, refreshToken])
 
   const option = useMemo(() => {
-    const labels = trend.map((p) =>
-      granularity === 'monthly'
-        ? `${Number(p.date.slice(5, 7))} 月`
-        : `${Number(p.date.slice(5, 7))}月${Number(p.date.slice(8, 10))}日`,
-    )
+    const labels = trend.map((p) => formatTrendLabel(p.date, granularity, lang))
     return {
       grid: { left: 48, right: 56, top: 24, bottom: 32, containLabel: true },
       tooltip: {
@@ -110,7 +95,9 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
             head +
             params
               .map((p) => {
-                const value = p.seriesName === '收入（USD）' ? currency.format(p.value ?? 0) : `${p.value ?? 0}`
+                // 比的是同一个常量,不是字面量 —— 换语言后 series 名字变了,
+                // 写死中文会让金额那条悄悄退回成裸数字。
+                const value = p.seriesName === t.series.revenue ? usd.format(p.value ?? 0) : `${p.value ?? 0}`
                 return `<div style="display:flex;align-items:center;gap:6px">
                   <span style="width:8px;height:8px;border-radius:2px;background:${p.color}"></span>
                   <span style="flex:1">${p.seriesName}</span>
@@ -145,13 +132,13 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
           axisLabel: {
             color: 'hsl(var(--muted-foreground))',
             fontSize: 11,
-            formatter: (v: number) => axisCurrency.format(v),
+            formatter: (v: number) => usdAxis.format(v),
           },
         },
       ],
       series: [
         {
-          name: '新注册用户',
+          name: t.series.newUsers,
           type: 'line',
           smooth: true,
           showSymbol: false,
@@ -160,7 +147,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
           areaStyle: { opacity: 0.12 },
         },
         {
-          name: '新增付费用户',
+          name: t.series.newPayers,
           type: 'line',
           smooth: true,
           symbolSize: 7,
@@ -172,7 +159,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
           itemStyle: { color: '#14b8a6' },
         },
         {
-          name: '收入（USD）',
+          name: t.series.revenue,
           type: 'line',
           smooth: true,
           showSymbol: false,
@@ -182,12 +169,12 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
         },
       ],
     }
-  }, [trend, granularity])
+  }, [trend, granularity, lang, t])
 
   if (error) {
     return (
       <Card>
-        <CardContent className="p-6 text-sm text-destructive">增长数据加载失败：{error}</CardContent>
+        <CardContent className="p-6 text-sm text-destructive">{t.growthError(error)}</CardContent>
       </Card>
     )
   }
@@ -195,33 +182,34 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h3 className="text-sm font-medium text-muted-foreground">用户</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{t.growthUsers}</h3>
         <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <MetricCard title="本月注册" value={metrics?.month_users} icon={UserPlus} loading={loading} />
-          <MetricCard title="累计注册" value={metrics?.total_users} icon={Users} loading={loading} />
-          <MetricCard title="本月付费用户" value={metrics?.month_payers} icon={CreditCard} loading={loading} />
-          <MetricCard title="累计付费用户" value={metrics?.total_payers} icon={UserCheck} loading={loading} />
+          <MetricCard title={t.monthUsers} value={metrics?.month_users} icon={UserPlus} loading={loading} locale={locale} />
+          <MetricCard title={t.totalUsers} value={metrics?.total_users} icon={Users} loading={loading} locale={locale} />
+          <MetricCard title={t.monthPayers} value={metrics?.month_payers} icon={CreditCard} loading={loading} locale={locale} />
+          <MetricCard title={t.totalPayers} value={metrics?.total_payers} icon={UserCheck} loading={loading} locale={locale} />
         </div>
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-sm font-medium text-muted-foreground">收入</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{t.growthRevenue}</h3>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          <MetricCard title="本月收入" value={metrics?.month_revenue} icon={Wallet} loading={loading} money />
+          <MetricCard title={t.monthRevenue} value={metrics?.month_revenue} icon={Wallet} loading={loading} locale={locale} money />
           <MetricCard
-            title="累计收入"
+            title={t.totalRevenue}
             value={metrics?.total_revenue}
             icon={DollarSign}
             loading={loading}
+            locale={locale}
             money
             // Say that a conversion happened and at what rate. The alternative
             // is a USD figure that quietly contains yuan, which is the bug this
             // card was changed to fix.
             hint={
               metrics
-                ? `${metrics.settled_orders} 笔已结算` +
+                ? t.settledOrders(metrics.settled_orders) +
                   (metrics.total_revenue_cny > 0
-                    ? ` · 其中 ${cny.format(metrics.total_revenue_cny)} 按 ¥${metrics.cny_per_usd}/$ 折算`
+                    ? t.convertedFrom(formatCny(lang, metrics.total_revenue_cny), metrics.cny_per_usd)
                     : '')
                 : undefined
             }
@@ -233,7 +221,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-lg flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-primary" />
-            增长趋势
+            {t.growthTrend}
           </CardTitle>
           <div className="flex items-center rounded-lg bg-muted p-0.5 text-sm">
             {(['daily', 'monthly'] as Granularity[]).map((g) => (
@@ -247,7 +235,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                {g === 'daily' ? '近 30 天' : '近 12 个月'}
+                {g === 'daily' ? t.last30Days : t.last12Months}
               </button>
             ))}
           </div>
@@ -265,10 +253,10 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-y text-muted-foreground">
-                  <th className="text-left font-normal py-2 px-6">日期</th>
-                  <th className="text-right font-normal py-2 px-3">新注册用户</th>
-                  <th className="text-right font-normal py-2 px-3">新增付费用户</th>
-                  <th className="text-right font-normal py-2 px-6">收入（USD）</th>
+                  <th className="text-left font-normal py-2 px-6">{t.colDate}</th>
+                  <th className="text-right font-normal py-2 px-3">{t.series.newUsers}</th>
+                  <th className="text-right font-normal py-2 px-3">{t.series.newPayers}</th>
+                  <th className="text-right font-normal py-2 px-6">{t.series.revenue}</th>
                 </tr>
               </thead>
               <tbody>
@@ -288,7 +276,7 @@ export function GrowthPanel({ refreshToken }: { refreshToken?: number }) {
                     <td
                       className={cn('py-2 px-6 text-right tabular-nums', !p.revenue && 'text-muted-foreground')}
                     >
-                      {currency.format(p.revenue || 0)}
+                      {usd.format(p.revenue || 0)}
                     </td>
                   </tr>
                 ))}
@@ -308,6 +296,7 @@ function MetricCard({
   loading,
   money,
   hint,
+  locale,
 }: {
   title: string
   value?: number
@@ -315,6 +304,7 @@ function MetricCard({
   loading?: boolean
   money?: boolean
   hint?: string
+  locale: string
 }) {
   return (
     <Card className="glass-card">
@@ -327,9 +317,9 @@ function MetricCard({
           {loading ? (
             <span className="inline-block h-8 w-20 rounded bg-muted animate-pulse align-middle" />
           ) : money ? (
-            currency.format(value ?? 0)
+            usd.format(value ?? 0)
           ) : (
-            (value ?? 0).toLocaleString()
+            (value ?? 0).toLocaleString(locale)
           )}
         </div>
         {hint && !loading && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}

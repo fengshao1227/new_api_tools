@@ -3,10 +3,17 @@ import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import { TrendChart } from './TrendChart'
 import { GrowthPanel } from './GrowthPanel'
-import { Users, Key, Server, Box, Ticket, Zap, Crown, Loader2, RefreshCw, Activity, BarChart3, Clock, Database, Timer, ChevronDown, Hash, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react'
+import { Users, Key, Server, Box, Ticket, Zap, Crown, Loader2, RefreshCw, Activity, BarChart3, Clock, Database, Timer, ChevronDown, Hash, ArrowDownToLine, ArrowUpFromLine, Languages } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
+import {
+  DASHBOARD_TEXT,
+  localeOf,
+  readDashboardLang,
+  writeDashboardLang,
+  type DashboardLang,
+} from '../lib/dashboardI18n'
 
 type RefreshInterval = 0 | 30 | 60 | 120 | 300 // 秒，0表示关闭
 
@@ -79,6 +86,17 @@ interface RefreshEstimate {
 
 type PeriodType = '24h' | '3d' | '7d' | '14d'
 
+/**
+ * 加载错误只记「哪一种」,不记文案 —— 换语言时错误提示要跟着换,
+ * 而把翻译好的句子塞进 state 就换不动了。
+ */
+type LoadErrorKind = 'timeout' | 'refresh' | 'retry'
+const LOAD_ERROR_TEXT = {
+  timeout: 'loadTimeout',
+  refresh: 'refreshFailedDetail',
+  retry: 'retryFailedDetail',
+} as const
+
 export function Dashboard() {
   const { token } = useAuth()
   const { showToast } = useToast()
@@ -90,7 +108,17 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [period, setPeriod] = useState<PeriodType>('24h')
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<LoadErrorKind | null>(null)
+
+  // 语言只作用于这一页(含它独占的 GrowthPanel / TrendChart),默认英文。
+  const [lang, setLang] = useState<DashboardLang>(readDashboardLang)
+  const t = DASHBOARD_TEXT[lang]
+  const locale = localeOf(lang)
+  const toggleLang = () => {
+    const next: DashboardLang = lang === 'en' ? 'zh' : 'en'
+    setLang(next)
+    writeDashboardLang(next)
+  }
 
   const DASHBOARD_REFRESH_KEY = 'dashboard_refresh_interval'
   const [refreshInterval, setRefreshInterval] = useState<RefreshInterval>(() => {
@@ -289,7 +317,7 @@ export function Dashboard() {
       setLoading(true)
 
       const timeoutId = window.setTimeout(() => {
-        if (mounted) setLoadError('仪表盘加载超时，请稍后重试（可能是数据库负载过高）')
+        if (mounted) setLoadError('timeout')
         controller.abort()
       }, requestTimeoutMs)
 
@@ -318,8 +346,8 @@ export function Dashboard() {
     try {
       const ok = await fetchAll(false, controller.signal)
       if (!ok || controller.signal.aborted) {
-        showToast('error', '重试失败，请稍后再试')
-        setLoadError('重试失败，请稍后再试（可能是数据库负载过高）')
+        showToast('error', t.retryFailed)
+        setLoadError('retry')
       }
     } finally {
       window.clearTimeout(timeoutId)
@@ -343,7 +371,7 @@ export function Dashboard() {
 
     // 大型系统显示进度
     if (systemInfo?.is_large_system) {
-      setRefreshProgress('正在刷新数据...')
+      setRefreshProgress(t.refreshingData)
     }
 
     const controller = new AbortController()
@@ -354,14 +382,14 @@ export function Dashboard() {
     try {
       const ok = await refreshAll(controller.signal)
       if (ok && !controller.signal.aborted) {
-        showToast('success', '数据已刷新')
+        showToast('success', t.refreshed)
         setLastRefreshTime(new Date())
         if (refreshInterval > 0) {
           setCountdown(refreshInterval)
         }
       } else {
-        showToast('error', '刷新失败，请稍后再试')
-        setLoadError('刷新失败，请稍后再试（可能是数据库负载过高）')
+        showToast('error', t.refreshFailed)
+        setLoadError('refresh')
       }
     } finally {
       window.clearTimeout(timeoutId)
@@ -420,10 +448,10 @@ export function Dashboard() {
     if (interval > 0) {
       setCountdown(interval)
       localStorage.setItem(DASHBOARD_REFRESH_KEY, interval.toString())
-      showToast('success', `自动刷新已设置为 ${getIntervalLabel(interval)}`)
+      showToast('success', t.autoRefreshSetTo(t.interval[interval]))
     } else {
       localStorage.removeItem(DASHBOARD_REFRESH_KEY)
-      showToast('info', '自动刷新已关闭')
+      showToast('info', t.autoRefreshOff)
     }
     setShowIntervalDropdown(false)
   }
@@ -435,27 +463,16 @@ export function Dashboard() {
   }
 
   const formatLastRefreshTime = (date: Date | null) => {
-    if (!date) return '从未'
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  }
-
-  const getIntervalLabel = (interval: RefreshInterval) => {
-    switch (interval) {
-      case 0: return '关闭'
-      case 30: return '30秒'
-      case 60: return '1分钟'
-      case 120: return '2分钟'
-      case 300: return '5分钟'
-      default: return '关闭'
-    }
+    if (!date) return t.never
+    return date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
   const formatQuota = (quota: number) => `$${(quota / 500000).toFixed(2)}`
   const formatNumber = (num: number) => {
-    return num.toLocaleString('zh-CN')
+    return num.toLocaleString(locale)
   }
   const getMaxValue = (data: number[]) => Math.max(...data, 1)
-  const getPeriodLabel = () => period === '24h' ? '24小时' : period === '3d' ? '3天' : period === '7d' ? '7天' : '14天'
+  const getPeriodLabel = () => t.period[period]
 
   if (loading) {
     return (
@@ -468,10 +485,10 @@ export function Dashboard() {
   if (loadError) {
     return (
       <div className="flex flex-col items-center justify-center py-40 gap-4">
-        <p className="text-sm text-muted-foreground text-center max-w-md">{loadError}</p>
+        <p className="text-sm text-muted-foreground text-center max-w-md">{t[LOAD_ERROR_TEXT[loadError]]}</p>
         <Button variant="outline" onClick={handleRetry} disabled={refreshing}>
           <RefreshCw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
-          {refreshing ? '重试中...' : '重试'}
+          {refreshing ? t.retrying : t.retry}
         </Button>
       </div>
     )
@@ -488,19 +505,19 @@ export function Dashboard() {
                 <Database className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
               </div>
               <div>
-                <h3 className="font-semibold">确认刷新数据</h3>
-                <p className="text-sm text-muted-foreground">{refreshEstimate.scale === 'large' ? '大型系统' : '超大型系统'}</p>
+                <h3 className="font-semibold">{t.confirmRefreshTitle}</h3>
+                <p className="text-sm text-muted-foreground">{refreshEstimate.scale === 'large' ? t.scaleLarge : t.scaleHuge}</p>
               </div>
             </div>
 
             <div className="space-y-3 mb-6">
               <div className="bg-muted/50 rounded-lg p-4 space-y-2">
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">预计扫描日志</span>
-                  <span className="font-medium">{refreshEstimate.estimated_logs_formatted} 条</span>
+                  <span className="text-muted-foreground">{t.logsToScan}</span>
+                  <span className="font-medium">{t.rows(refreshEstimate.estimated_logs_formatted ?? '')}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">预计耗时</span>
+                  <span className="text-muted-foreground">{t.estimatedTime}</span>
                   <span className="font-medium">{refreshEstimate.estimated_time_formatted}</span>
                 </div>
               </div>
@@ -519,13 +536,13 @@ export function Dashboard() {
                 className="flex-1"
                 onClick={handleCancelRefresh}
               >
-                取消
+                {t.cancel}
               </Button>
               <Button
                 className="flex-1"
                 onClick={handleRefresh}
               >
-                确认刷新
+                {t.confirmRefresh}
               </Button>
             </div>
           </div>
@@ -541,10 +558,10 @@ export function Dashboard() {
               <div className="text-center">
                 <p className="font-medium">{refreshProgress}</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  正在查询 {refreshEstimate?.estimated_logs_formatted || '大量'} 条日志数据
+                  {t.scanningRows(refreshEstimate?.estimated_logs_formatted || t.manyRows)}
                 </p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  预计需要 {refreshEstimate?.estimated_time_formatted || '较长时间'}，请耐心等待
+                  {t.estimatedWait(refreshEstimate?.estimated_time_formatted || t.aWhile)}
                 </p>
               </div>
             </div>
@@ -555,15 +572,26 @@ export function Dashboard() {
       {/* Header Actions */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">仪表盘</h2>
-          <p className="text-muted-foreground mt-1">系统运行状态与实时数据概览</p>
+          <h2 className="text-3xl font-bold tracking-tight">{t.title}</h2>
+          <p className="text-muted-foreground mt-1">{t.subtitle}</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {/* 刷新按钮和自动刷新控制 */}
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleLang}
+              className="h-9 px-2 text-muted-foreground"
+              title={t.langToggleTitle}
+            >
+              <Languages className="h-4 w-4 mr-1.5" />
+              {t.langToggle}
+            </Button>
+
             <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing} className="h-9">
               <RefreshCw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
-              {refreshing ? '刷新中...' : '刷新'}
+              {refreshing ? t.refreshing : t.refresh}
             </Button>
 
             {/* 自动刷新下拉菜单 */}
@@ -580,7 +608,7 @@ export function Dashboard() {
                     <span className="text-primary font-medium">{formatCountdown(countdown)}</span>
                   </span>
                 ) : (
-                  '自动刷新'
+                  t.autoRefresh
                 )}
                 <ChevronDown className="h-3 w-3 ml-1" />
               </Button>
@@ -588,7 +616,7 @@ export function Dashboard() {
               {showIntervalDropdown && (
                 <div className="absolute right-0 mt-1 w-48 bg-popover border rounded-md shadow-lg z-50">
                   <div className="p-2 border-b">
-                    <p className="text-xs text-muted-foreground">刷新间隔</p>
+                    <p className="text-xs text-muted-foreground">{t.refreshInterval}</p>
                   </div>
                   <div className="p-1">
                     {([0, 30, 60, 120, 300] as RefreshInterval[]).map((interval) => (
@@ -600,14 +628,14 @@ export function Dashboard() {
                           refreshInterval === interval && "bg-accent text-accent-foreground"
                         )}
                       >
-                        {getIntervalLabel(interval)}
+                        {t.interval[interval]}
                       </button>
                     ))}
                   </div>
                   {lastRefreshTime && (
                     <div className="p-2 border-t">
                       <p className="text-xs text-muted-foreground">
-                        上次刷新: {formatLastRefreshTime(lastRefreshTime)}
+                        {t.lastRefresh(formatLastRefreshTime(lastRefreshTime))}
                       </p>
                     </div>
                   )}
@@ -626,7 +654,7 @@ export function Dashboard() {
                 onClick={() => { setDailyTrends([]); setPeriod(p) }}
                 className="h-7 text-xs px-3"
               >
-                {p === '24h' ? '24小时' : p === '3d' ? '3天' : p === '7d' ? '7天' : '14天'}
+                {t.period[p]}
               </Button>
             ))}
           </div>
@@ -636,47 +664,47 @@ export function Dashboard() {
       {/* Growth: who signed up, who paid, how much came in. Ahead of the
           resource counters on purpose — it answers the questions that get asked
           first, and unlike everything below it, it does not depend on `logs`. */}
-      <GrowthPanel refreshToken={lastRefreshTime?.getTime()} />
+      <GrowthPanel refreshToken={lastRefreshTime?.getTime()} lang={lang} />
 
       {/* System Overview Section */}
       <section className="space-y-4">
         <h3 className="text-lg font-semibold flex items-center gap-2">
           <Database className="w-5 h-5 text-primary" />
-          平台资源
+          {t.resources}
         </h3>
         <div className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
           <StatCard
-            title="用户总数"
+            title={t.users}
             value={overview?.total_users || 0}
-            subValue={`${overview?.active_users || 0} 活跃(${getPeriodLabel()})`}
+            subValue={t.activeSuffix(overview?.active_users || 0, getPeriodLabel())}
             icon={Users}
             color="blue"
           />
           <StatCard
-            title="令牌总数"
+            title={t.tokens}
             value={overview?.total_tokens || 0}
-            subValue={`${overview?.active_tokens || 0} 活跃(${getPeriodLabel()})`}
+            subValue={t.activeSuffix(overview?.active_tokens || 0, getPeriodLabel())}
             icon={Key}
             color="emerald"
           />
           <StatCard
-            title="渠道总数"
+            title={t.channels}
             value={overview?.total_channels || 0}
-            subValue={`${overview?.active_channels || 0} 在线`}
+            subValue={t.onlineSuffix(overview?.active_channels || 0)}
             icon={Server}
             color="purple"
           />
           <StatCard
-            title="模型数量"
+            title={t.models}
             value={overview?.total_models || 0}
-            subValue="可用模型"
+            subValue={t.availableModels}
             icon={Box}
             color="orange"
           />
           <StatCard
-            title="兑换码"
+            title={t.redemptions}
             value={overview?.total_redemptions || 0}
-            subValue={`${overview?.unused_redemptions || 0} 未用`}
+            subValue={t.unusedSuffix(overview?.unused_redemptions || 0)}
             icon={Ticket}
             color="pink"
           />
@@ -687,11 +715,11 @@ export function Dashboard() {
       <section className="space-y-4">
         <h3 className="text-lg font-semibold flex items-center gap-2">
           <Activity className="w-5 h-5 text-primary" />
-          流量分析 ({getPeriodLabel()})
+          {t.traffic(getPeriodLabel())}
         </h3>
         <div className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4">
           <StatCard
-            title="请求总数"
+            title={t.totalRequests}
             value={formatNumber(usage?.total_requests || 0)}
             rawValue={usage?.total_requests || 0}
             icon={BarChart3}
@@ -699,7 +727,7 @@ export function Dashboard() {
             variant="compact"
           />
           <StatCard
-            title="消耗额度"
+            title={t.quotaSpent}
             value={formatQuota(usage?.total_quota_used || 0)}
             rawValue={usage?.total_quota_used ? usage.total_quota_used / 500000 : 0}
             icon={Zap}
@@ -707,7 +735,7 @@ export function Dashboard() {
             variant="compact"
           />
           <StatCard
-            title="总 Token"
+            title={t.totalTokens}
             value={formatNumber(Number(usage?.total_prompt_tokens || 0) + Number(usage?.total_completion_tokens || 0))}
             rawValue={Number(usage?.total_prompt_tokens || 0) + Number(usage?.total_completion_tokens || 0)}
             icon={Hash}
@@ -715,7 +743,7 @@ export function Dashboard() {
             variant="compact"
           />
           <StatCard
-            title="输入 Token"
+            title={t.promptTokens}
             value={formatNumber(Number(usage?.total_prompt_tokens || 0))}
             rawValue={Number(usage?.total_prompt_tokens || 0)}
             icon={ArrowDownToLine}
@@ -723,7 +751,7 @@ export function Dashboard() {
             variant="compact"
           />
           <StatCard
-            title="输出 Token"
+            title={t.completionTokens}
             value={formatNumber(Number(usage?.total_completion_tokens || 0))}
             rawValue={Number(usage?.total_completion_tokens || 0)}
             icon={ArrowUpFromLine}
@@ -731,7 +759,7 @@ export function Dashboard() {
             variant="compact"
           />
           <StatCard
-            title="平均响应"
+            title={t.avgResponse}
             value={`${(usage?.average_response_time || 0).toFixed(3)}ms`}
             icon={Clock}
             color="rose"
@@ -745,7 +773,7 @@ export function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
         {/* Daily Trends Chart */}
         <div className="flex flex-col h-full">
-          <TrendChart data={dailyTrends} period={period} loading={loading} totalRequests={Number(usage?.total_requests || 0)} />
+          <TrendChart data={dailyTrends} period={period} loading={loading} totalRequests={Number(usage?.total_requests || 0)} lang={lang} />
         </div>
 
         {/* Model Usage List */}
@@ -753,9 +781,9 @@ export function Dashboard() {
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <Box className="w-5 h-5 text-muted-foreground" />
-              模型使用分布
+              {t.modelUsage}
             </CardTitle>
-            <CardDescription>{getPeriodLabel()}内 Top 8 活跃模型</CardDescription>
+            <CardDescription>{t.topModels(getPeriodLabel())}</CardDescription>
           </CardHeader>
           <CardContent className="flex-1 overflow-hidden">
             {models.length > 0 ? (
@@ -784,7 +812,7 @@ export function Dashboard() {
               </div>
             ) : (
               <div className="h-full min-h-[300px] flex items-center justify-center text-muted-foreground bg-muted/20 rounded-lg">
-                暂无数据
+                {t.noData}
               </div>
             )}
           </CardContent>
@@ -794,24 +822,26 @@ export function Dashboard() {
       {/* Analytics Kings */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <KingCard
-          title="请求之王"
-          subtitle={`${getPeriodLabel()}内请求数最多`}
+          title={t.requestKing}
+          subtitle={t.requestKingSub(getPeriodLabel())}
           icon={Zap}
           user={analyticsSummary?.request_king}
-          valueLabel="总请求数"
-          value={analyticsSummary?.request_king?.request_count.toLocaleString()}
+          valueLabel={t.requestKingValue}
+          value={analyticsSummary?.request_king?.request_count.toLocaleString(locale)}
           gradient="from-blue-600 to-indigo-600"
           accentColor="text-blue-100"
+          emptyLabel={t.noData}
         />
         <KingCard
-          title="土豪榜首"
-          subtitle={`${getPeriodLabel()}内消耗额度最多`}
+          title={t.quotaKing}
+          subtitle={t.quotaKingSub(getPeriodLabel())}
           icon={Crown}
           user={analyticsSummary?.quota_king}
-          valueLabel="总消耗额度"
+          valueLabel={t.quotaKingValue}
           value={analyticsSummary?.quota_king ? `$${(analyticsSummary.quota_king.quota_used / 500000).toFixed(2)}` : undefined}
           gradient="from-emerald-600 to-teal-600"
           accentColor="text-emerald-100"
+          emptyLabel={t.noData}
         />
       </div>
     </div>
@@ -861,7 +891,7 @@ function StatCard({ title, value, rawValue, subValue, icon: Icon, color, variant
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{customLabel || title}</p>
             <div
               className={cn(fontSize, "font-bold tracking-tight cursor-default tabular-nums text-foreground/90")}
-              title={rawValue !== undefined ? rawValue.toLocaleString('zh-CN') : undefined}
+              title={rawValue !== undefined ? rawValue.toLocaleString() : undefined}
             >
               {value}
             </div>
@@ -908,9 +938,10 @@ interface KingCardProps {
   value: string | undefined
   gradient: string
   accentColor: string
+  emptyLabel: string
 }
 
-function KingCard({ title, subtitle, icon: Icon, user, valueLabel, value, gradient, accentColor }: KingCardProps) {
+function KingCard({ title, subtitle, icon: Icon, user, valueLabel, value, gradient, accentColor, emptyLabel }: KingCardProps) {
   return (
     <div className={`glass-card bg-gradient-to-br ${gradient} rounded-2xl shadow-lg p-6 text-white relative overflow-hidden group hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-white/20`}>
       {/* Background Pattern */}
@@ -948,7 +979,7 @@ function KingCard({ title, subtitle, icon: Icon, user, valueLabel, value, gradie
         </div>
       ) : (
         <div className="mt-6 h-[108px] flex flex-col items-center justify-center bg-white/5 rounded-lg border border-white/10 backdrop-blur-sm relative z-10">
-          <p className="text-white/60">暂无数据</p>
+          <p className="text-white/60">{emptyLabel}</p>
         </div>
       )}
     </div>
