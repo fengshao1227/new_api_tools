@@ -139,8 +139,8 @@ func (s *DashboardService) GetGrowthMetrics(noCache bool) (map[string]interface{
 			COALESCE(SUM(CASE WHEN %s THEN money ELSE 0 END), 0) AS total_revenue_cny,
 			COUNT(*) AS settled_orders
 		FROM top_ups
-		WHERE (%s) = ?`, paidAtExpr, usd, paidAtExpr, usd, cnyRailPredicate, successStatusCondition()))
-	if row, err := s.db.QueryOneWithTimeout(15*time.Second, payQuery, monthStart, monthStart, topUpSettledStatus); err == nil && row != nil {
+		WHERE %s`, paidAtExpr, usd, paidAtExpr, usd, cnyRailPredicate, successStatusCondition()))
+	if row, err := s.db.QueryOneWithTimeout(15*time.Second, payQuery, monthStart, monthStart); err == nil && row != nil {
 		result["total_payers"] = toFloat64(row["total_payers"])
 		result["month_payers"] = toFloat64(row["month_payers"])
 		result["total_revenue"] = toFloat64(row["total_revenue"])
@@ -219,9 +219,9 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 	revenueQuery := s.db.RebindQuery(fmt.Sprintf(`
 		SELECT %s AS day_group, COALESCE(SUM(%s), 0) AS revenue, COUNT(*) AS orders
 		FROM top_ups
-		WHERE (%s) = ? AND %s >= ?
+		WHERE %s AND %s >= ?
 		GROUP BY %s`, revenueExpr, revenueUSDExpr(), successStatusCondition(), paidAtExpr, revenueExpr))
-	rows, err = s.db.QueryWithTimeout(30*time.Second, revenueQuery, topUpSettledStatus, startUnix)
+	rows, err = s.db.QueryWithTimeout(30*time.Second, revenueQuery, startUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -241,12 +241,12 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 		FROM (
 			SELECT user_id, MIN(%s) AS first_paid
 			FROM top_ups
-			WHERE (%s) = ?
+			WHERE %s
 			GROUP BY user_id
 		) first_payments
 		WHERE first_paid >= ?
 		GROUP BY %s`, firstPayExpr, paidAtExpr, successStatusCondition(), firstPayExpr))
-	rows, err = s.db.QueryWithTimeout(30*time.Second, firstPayQuery, topUpSettledStatus, startUnix)
+	rows, err = s.db.QueryWithTimeout(30*time.Second, firstPayQuery, startUnix)
 	if err != nil {
 		return nil, err
 	}
