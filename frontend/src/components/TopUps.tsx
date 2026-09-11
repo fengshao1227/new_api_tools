@@ -13,13 +13,17 @@ import { StatCard } from './StatCard'
 import { TopUpAnalytics } from './TopUpAnalytics'
 import { TopUpAudit } from './TopUpAudit'
 import { cn } from '../lib/utils'
+import { formatTopUpAmount, formatTopUpMoney } from '../lib/topup-display'
 
 interface TopUpRecord {
   id: number
   user_id: number
   username: string | null
+  user_email?: string | null
   amount: number
+  amount_usd?: number | null
   money: number
+  payment_currency?: string | null
   trade_no: string
   payment_method: string
   payment_provider: string
@@ -50,6 +54,11 @@ interface TopUpStatistics {
   unknown_count: number
   unknown_amount: number
   unknown_money: number
+  success_amount_usd?: number | null
+  success_money_usd?: number | null
+  pending_money_usd?: number | null
+  failed_money_usd?: number | null
+  expired_money_usd?: number | null
 }
 
 interface PaginatedResponse {
@@ -86,9 +95,11 @@ interface UserQuotaIncomeSummary {
   username: string
   paid_count: number
   paid_money: number
+  paid_money_usd?: number | null
   paid_amount: number
   unsuccess_count: number
   unsuccess_money: number
+  unsuccess_money_usd?: number | null
   redemption_count: number
   redemption_quota_raw: number
   redemption_quota_usd: number
@@ -303,8 +314,8 @@ export function TopUps() {
   }
 
   const formatTimestamp = (ts: number) => ts ? new Date(ts * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
-  const formatAmount = (amount: number) => amount.toFixed(2)
-  const formatMoney = (money: number) => `¥${money.toFixed(2)}`
+  const formatAmount = formatTopUpAmount
+  const formatMoney = (money?: number | null) => formatTopUpMoney(money, 'USD')
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -313,7 +324,7 @@ export function TopUps() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">充值记录</h2>
           <p className="text-muted-foreground mt-1">
-            查看充值历史 · 实付金额为用户实际支付，获得额度为入账额度
+            实付金额按支付币种显示 · 获得额度与汇总统一为 USD
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -369,7 +380,7 @@ export function TopUps() {
             <StatCard
               title="成功充值"
               value={statsLoading ? '-' : `${statistics?.success_count || 0} 笔`}
-              subValue={statsLoading ? '-' : `${formatMoney(statistics?.success_money || 0)}`}
+              subValue={statsLoading ? '-' : formatMoney(statistics?.success_money_usd)}
               icon={CheckCircle2}
               color="green"
               className="border-l-4 border-l-green-500"
@@ -378,7 +389,7 @@ export function TopUps() {
             <StatCard
               title="待处理"
               value={statsLoading ? '-' : `${statistics?.pending_count || 0} 笔`}
-              subValue={statsLoading ? '-' : `${formatMoney(statistics?.pending_money || 0)}`}
+              subValue={statsLoading ? '-' : formatMoney(statistics?.pending_money_usd)}
               icon={Clock}
               color="yellow"
               className="border-l-4 border-l-yellow-500"
@@ -387,7 +398,7 @@ export function TopUps() {
             <StatCard
               title="充值失败"
               value={statsLoading ? '-' : `${statistics?.failed_count || 0} 笔`}
-              subValue={statsLoading ? '-' : `${formatMoney(statistics?.failed_money || 0)}`}
+              subValue={statsLoading ? '-' : formatMoney(statistics?.failed_money_usd)}
               icon={XCircle}
               color="red"
               className="border-l-4 border-l-red-500"
@@ -396,7 +407,7 @@ export function TopUps() {
             <StatCard
               title="已过期"
               value={statsLoading ? '-' : `${statistics?.expired_count || 0} 笔`}
-              subValue={statsLoading ? '-' : `${formatMoney(statistics?.expired_money || 0)}`}
+              subValue={statsLoading ? '-' : formatMoney(statistics?.expired_money_usd)}
               icon={AlertTriangle}
               color="gray"
               className="border-l-4 border-l-slate-500"
@@ -411,13 +422,13 @@ export function TopUps() {
                 <span className="text-muted-foreground">成功充值:</span>
                 <span className="font-semibold">{statsLoading ? '-' : statistics?.success_count || 0} 笔</span>
               </div>
-              <div className="flex items-center gap-2" title="成功充值订单的用户实付金额合计">
-                <span className="text-muted-foreground">实付金额:</span>
-                <span className="font-semibold text-primary">{statsLoading ? '-' : formatMoney(statistics?.success_money || 0)}</span>
+              <div className="flex items-center gap-2" title="成功充值的已确认币种金额，按配置汇率折算 USD；未确认币种不计入">
+                <span className="text-muted-foreground">实付合计（折合）:</span>
+                <span className="font-semibold text-primary">{statsLoading ? '-' : formatMoney(statistics?.success_money_usd)}</span>
               </div>
               <div className="flex items-center gap-2" title="成功充值后用户获得的额度合计">
                  <span className="text-muted-foreground">获得额度:</span>
-                 <span className="font-semibold text-green-600">{statsLoading ? '-' : formatAmount(statistics?.success_amount || 0)} USD</span>
+                 <span className="font-semibold text-green-600">{statsLoading ? '-' : formatMoney(statistics?.success_amount_usd)}</span>
               </div>
               {(statistics?.unknown_count || 0) > 0 && (
                 <div className="flex items-center gap-2">
@@ -429,6 +440,7 @@ export function TopUps() {
               )}
             </CardContent>
           </Card>
+          <p className="text-xs text-muted-foreground">金额汇总仅包含已确认币种的订单，人民币按配置汇率折算为 USD。</p>
 
           {/* 单用户：实付 vs 兑换码统计（输入用户 ID 后显示） */}
           {exactUserId != null && (
@@ -471,9 +483,9 @@ export function TopUps() {
                       <div className="text-xs text-muted-foreground">在线充值成功单</div>
                     </div>
                     <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1">
-                      <div className="text-xs text-muted-foreground">实付金额</div>
+                      <div className="text-xs text-muted-foreground">实付金额（折合 USD）</div>
                       <div className="font-semibold text-lg text-primary">
-                        {formatMoney(userIncome.paid_money)}
+                        {formatMoney(userIncome.paid_money_usd)}
                       </div>
                       <div className="text-xs text-muted-foreground">用户实际支付合计</div>
                     </div>
@@ -483,7 +495,7 @@ export function TopUps() {
                         {userIncome.unsuccess_count ?? 0} 笔
                       </div>
                       <div className="text-muted-foreground">
-                        金额 {formatMoney(userIncome.unsuccess_money ?? 0)}
+                        金额 {formatMoney(userIncome.unsuccess_money_usd)}
                       </div>
                       <div className="text-xs text-muted-foreground">待处理 + 已过期</div>
                     </div>
@@ -633,8 +645,9 @@ export function TopUps() {
                       <TableRow>
                         <TableHead className="w-[80px]">ID</TableHead>
                         <TableHead>用户</TableHead>
-                        <TableHead title="用户实际支付的金额（top_ups.money）">实付金额 (CNY)</TableHead>
-                        <TableHead title="用户充值后获得的额度（top_ups.amount，USD）">获得额度 (USD)</TableHead>
+                        <TableHead>邮箱</TableHead>
+                        <TableHead title="按订单支付币种显示；成功订单为实付金额，待处理订单为应付金额">支付金额（原币种）</TableHead>
+                        <TableHead title="充值额度统一换算为 USD，成功后入账">获得额度 (USD)</TableHead>
                         <TableHead>交易号</TableHead>
                         <TableHead>支付渠道</TableHead>
                         <TableHead>状态</TableHead>
@@ -659,11 +672,16 @@ export function TopUps() {
                               </button>
                             </div>
                           </TableCell>
-                          <TableCell className="font-medium text-primary" title="用户实际支付金额">
-                            {formatMoney(record.money)}
+                          <TableCell className="text-sm">
+                            <span className="block max-w-[220px] truncate" title={record.user_email?.trim() || undefined}>
+                              {record.user_email?.trim() || '—'}
+                            </span>
+                          </TableCell>
+                          <TableCell className="font-medium text-primary whitespace-nowrap" title="成功订单为实付金额；待处理订单为应付金额">
+                            {formatTopUpMoney(record.money, record.payment_currency)}
                           </TableCell>
                           <TableCell className="font-medium text-green-600" title="用户获得额度">
-                            {formatAmount(record.amount)}
+                            {formatAmount(record.amount_usd)}
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1 max-w-[200px]">

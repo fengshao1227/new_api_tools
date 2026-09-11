@@ -16,13 +16,17 @@ import (
 
 // TopUpRecord represents a top-up record
 type TopUpRecord struct {
-	ID       int64   `json:"id" db:"id"`
-	UserID   int64   `json:"user_id" db:"user_id"`
-	Username *string `json:"username" db:"username"`
+	ID        int64   `json:"id" db:"id"`
+	UserID    int64   `json:"user_id" db:"user_id"`
+	Username  *string `json:"username" db:"username"`
+	UserEmail *string `json:"user_email" db:"user_email"`
 	// Amount 用户获得的额度（USD 数量，易支付等渠道；非 raw quota）
-	Amount int64 `json:"amount" db:"amount"`
+	Amount    int64   `json:"amount" db:"amount"`
+	AmountUSD float64 `json:"amount_usd" db:"-"`
 	// Money 用户实际支付金额（多为 CNY；Stripe 等渠道语义可能不同）
 	Money             float64  `json:"money" db:"money"`
+	MoneyUSD          float64  `json:"money_usd" db:"-"`
+	PaymentCurrency   string   `json:"payment_currency" db:"-"`
 	TradeNo           string   `json:"trade_no" db:"trade_no"`
 	PaymentMethod     string   `json:"payment_method" db:"payment_method"`
 	PaymentProvider   string   `json:"payment_provider" db:"payment_provider"`
@@ -36,24 +40,29 @@ type TopUpRecord struct {
 
 // TopUpStatistics holds aggregate top-up statistics
 type TopUpStatistics struct {
-	TotalCount    int64   `json:"total_count"`
-	TotalAmount   int64   `json:"total_amount"`
-	TotalMoney    float64 `json:"total_money"`
-	SuccessCount  int64   `json:"success_count"`
-	SuccessAmount int64   `json:"success_amount"`
-	SuccessMoney  float64 `json:"success_money"`
-	PendingCount  int64   `json:"pending_count"`
-	PendingAmount int64   `json:"pending_amount"`
-	PendingMoney  float64 `json:"pending_money"`
-	FailedCount   int64   `json:"failed_count"`
-	FailedAmount  int64   `json:"failed_amount"`
-	FailedMoney   float64 `json:"failed_money"`
-	ExpiredCount  int64   `json:"expired_count"`
-	ExpiredAmount int64   `json:"expired_amount"`
-	ExpiredMoney  float64 `json:"expired_money"`
-	UnknownCount  int64   `json:"unknown_count"`
-	UnknownAmount int64   `json:"unknown_amount"`
-	UnknownMoney  float64 `json:"unknown_money"`
+	TotalCount       int64   `json:"total_count"`
+	TotalAmount      int64   `json:"total_amount"`
+	TotalMoney       float64 `json:"total_money"`
+	SuccessCount     int64   `json:"success_count"`
+	SuccessAmount    int64   `json:"success_amount"`
+	SuccessMoney     float64 `json:"success_money"`
+	PendingCount     int64   `json:"pending_count"`
+	PendingAmount    int64   `json:"pending_amount"`
+	PendingMoney     float64 `json:"pending_money"`
+	FailedCount      int64   `json:"failed_count"`
+	FailedAmount     int64   `json:"failed_amount"`
+	FailedMoney      float64 `json:"failed_money"`
+	ExpiredCount     int64   `json:"expired_count"`
+	ExpiredAmount    int64   `json:"expired_amount"`
+	ExpiredMoney     float64 `json:"expired_money"`
+	UnknownCount     int64   `json:"unknown_count"`
+	UnknownAmount    int64   `json:"unknown_amount"`
+	UnknownMoney     float64 `json:"unknown_money"`
+	SuccessAmountUSD float64 `json:"success_amount_usd"`
+	SuccessMoneyUSD  float64 `json:"success_money_usd"`
+	PendingMoneyUSD  float64 `json:"pending_money_usd"`
+	FailedMoneyUSD   float64 `json:"failed_money_usd"`
+	ExpiredMoneyUSD  float64 `json:"expired_money_usd"`
 }
 
 // ListTopUpParams holds list query parameters
@@ -138,6 +147,62 @@ func enrichTopUpRecord(rec *TopUpRecord, now int64, pendingHours int) {
 		rec.CompletionSeconds = topUpCompletionSeconds(rec.CreateTime, rec.CompleteTime)
 	}
 	rec.AnomalyReasons = topUpAnomalyReasons(*rec, now, pendingHours)
+	rec.AmountUSD = topUpAmountUSD(*rec)
+	rec.PaymentCurrency = topUpPaymentCurrency(*rec)
+	if rec.PaymentCurrency == "CNY" {
+		rec.MoneyUSD = rec.Money / cnyPerUSD()
+	} else if rec.PaymentCurrency == "USD" {
+		rec.MoneyUSD = rec.Money
+	}
+}
+
+func topUpProvider(rec TopUpRecord) string {
+	provider := strings.ToLower(strings.TrimSpace(rec.PaymentProvider))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(rec.PaymentMethod))
+	}
+	return provider
+}
+
+func topUpAmountUSD(rec TopUpRecord) float64 {
+	switch topUpProvider(rec) {
+	case "dodo", "paypal", "creem":
+		return float64(rec.Amount) / float64(util.TokensPerUSD)
+	default:
+		return float64(rec.Amount)
+	}
+}
+
+func topUpPaymentCurrency(rec TopUpRecord) string {
+	switch topUpProvider(rec) {
+	case "epay", "alipay", "wxpay", "wechat", "wechat_pay":
+		return "CNY"
+	case "stripe", "dodo", "paypal", "creem", "waffo", "waffo_pancake":
+		return "USD"
+	default:
+		return ""
+	}
+}
+
+func topUpAmountUSDExpr(alias string) string {
+	amount := "amount"
+	method := "payment_method"
+	if alias != "" {
+		amount = alias + ".amount"
+		method = alias + ".payment_method"
+	}
+	provider := fmt.Sprintf(
+		"LOWER(COALESCE(NULLIF(%s, ''), %s, ''))",
+		topUpPaymentProviderExpr(alias),
+		method,
+	)
+	return fmt.Sprintf(
+		"(CASE WHEN %s IN ('dodo', 'paypal', 'creem') THEN %s / %d.0 ELSE %s END)",
+		provider,
+		amount,
+		util.TokensPerUSD,
+		amount,
+	)
 }
 
 func topUpAnomalyReasons(rec TopUpRecord, now int64, pendingHours int) []string {
@@ -184,7 +249,11 @@ func topUpPaymentProviderExpr(alias string) string {
 }
 
 func topUpSelectColumns() string {
-	return fmt.Sprintf(`t.id, t.user_id, u.username, t.amount, t.money,
+	email := "NULL"
+	if database.Get().ColumnExists("users", "email") {
+		email = "u.email"
+	}
+	return fmt.Sprintf(`t.id, t.user_id, u.username, %s AS user_email, t.amount, t.money,
 		COALESCE(t.trade_no,'') as trade_no,
 		COALESCE(t.payment_method,'') as payment_method,
 		COALESCE(%s,'') as payment_provider,
@@ -195,7 +264,7 @@ func topUpSelectColumns() string {
 		CASE
 			WHEN t.create_time > 0 AND t.complete_time > 0 AND t.complete_time >= t.create_time THEN t.complete_time - t.create_time
 			ELSE 0
-		END as completion_seconds`, topUpPaymentProviderExpr("t"), topUpStatusBucketSQL("t.status"))
+		END as completion_seconds`, email, topUpPaymentProviderExpr("t"), topUpStatusBucketSQL("t.status"))
 }
 
 // buildTopUpWhere translates filter params into a parameterised WHERE clause.
@@ -574,25 +643,55 @@ func GetTopUpStatistics(startDate, endDate string) (*TopUpStatistics, error) {
 		return nil, fmt.Errorf("statistics query failed: %w", err)
 	}
 
+	type presentationStats struct {
+		SuccessAmountUSD float64 `db:"success_amount_usd"`
+		SuccessMoneyUSD  float64 `db:"success_money_usd"`
+		PendingMoneyUSD  float64 `db:"pending_money_usd"`
+		FailedMoneyUSD   float64 `db:"failed_money_usd"`
+		ExpiredMoneyUSD  float64 `db:"expired_money_usd"`
+	}
+	presentationSQL := fmt.Sprintf(`SELECT
+		COALESCE(SUM(CASE WHEN (%s) = 'success' THEN %s ELSE 0 END), 0) AS success_amount_usd,
+		COALESCE(SUM(CASE WHEN (%s) = 'success' THEN %s ELSE 0 END), 0) AS success_money_usd,
+		COALESCE(SUM(CASE WHEN (%s) = 'pending' THEN %s ELSE 0 END), 0) AS pending_money_usd,
+		COALESCE(SUM(CASE WHEN (%s) = 'failed' THEN %s ELSE 0 END), 0) AS failed_money_usd,
+		COALESCE(SUM(CASE WHEN (%s) = 'expired' THEN %s ELSE 0 END), 0) AS expired_money_usd
+		FROM top_ups WHERE %s`,
+		bucketSQL, topUpAmountUSDExpr(""),
+		bucketSQL, revenueUSDExpr(),
+		bucketSQL, revenueUSDExpr(),
+		bucketSQL, revenueUSDExpr(),
+		bucketSQL, revenueUSDExpr(),
+		whereSQL)
+	var presentation presentationStats
+	if err := db.DB.Get(&presentation, presentationSQL, args...); err != nil {
+		return nil, fmt.Errorf("presentation statistics query failed: %w", err)
+	}
+
 	return &TopUpStatistics{
-		TotalCount:    raw.TotalCount,
-		TotalAmount:   raw.TotalAmount,
-		TotalMoney:    raw.TotalMoney,
-		SuccessCount:  raw.SuccessCount,
-		SuccessAmount: raw.SuccessAmount,
-		SuccessMoney:  raw.SuccessMoney,
-		PendingCount:  raw.PendingCount,
-		PendingAmount: raw.PendingAmount,
-		PendingMoney:  raw.PendingMoney,
-		FailedCount:   raw.FailedCount,
-		FailedAmount:  raw.FailedAmount,
-		FailedMoney:   raw.FailedMoney,
-		ExpiredCount:  raw.ExpiredCount,
-		ExpiredAmount: raw.ExpiredAmount,
-		ExpiredMoney:  raw.ExpiredMoney,
-		UnknownCount:  raw.UnknownCount,
-		UnknownAmount: raw.UnknownAmount,
-		UnknownMoney:  raw.UnknownMoney,
+		TotalCount:       raw.TotalCount,
+		TotalAmount:      raw.TotalAmount,
+		TotalMoney:       raw.TotalMoney,
+		SuccessCount:     raw.SuccessCount,
+		SuccessAmount:    raw.SuccessAmount,
+		SuccessMoney:     raw.SuccessMoney,
+		PendingCount:     raw.PendingCount,
+		PendingAmount:    raw.PendingAmount,
+		PendingMoney:     raw.PendingMoney,
+		FailedCount:      raw.FailedCount,
+		FailedAmount:     raw.FailedAmount,
+		FailedMoney:      raw.FailedMoney,
+		ExpiredCount:     raw.ExpiredCount,
+		ExpiredAmount:    raw.ExpiredAmount,
+		ExpiredMoney:     raw.ExpiredMoney,
+		UnknownCount:     raw.UnknownCount,
+		UnknownAmount:    raw.UnknownAmount,
+		UnknownMoney:     raw.UnknownMoney,
+		SuccessAmountUSD: presentation.SuccessAmountUSD,
+		SuccessMoneyUSD:  presentation.SuccessMoneyUSD,
+		PendingMoneyUSD:  presentation.PendingMoneyUSD,
+		FailedMoneyUSD:   presentation.FailedMoneyUSD,
+		ExpiredMoneyUSD:  presentation.ExpiredMoneyUSD,
 	}, nil
 }
 

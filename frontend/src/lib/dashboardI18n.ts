@@ -175,7 +175,7 @@ const en = {
   colDate: 'Date',
   series: {
     newUsers: 'New signups',
-    newPayers: 'New paying users',
+    newPayers: 'First-time paying users',
     revenue: 'Revenue (USD)',
   },
 
@@ -285,7 +285,7 @@ const zh: DashboardText = {
   colDate: '日期',
   series: {
     newUsers: '新注册用户',
-    newPayers: '新增付费用户',
+    newPayers: '首次付费用户',
     revenue: '收入（USD）',
   },
 

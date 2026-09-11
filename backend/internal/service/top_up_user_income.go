@@ -19,13 +19,15 @@ type UserQuotaIncomeSummary struct {
 	Username string `json:"username"`
 
 	// 在线充值（成功）
-	PaidCount  int64   `json:"paid_count"`
-	PaidMoney  float64 `json:"paid_money"`  // 实付金额 CNY（top_ups.money）
-	PaidAmount float64 `json:"paid_amount"` // 获得额度 USD（top_ups.amount）
+	PaidCount    int64   `json:"paid_count"`
+	PaidMoney    float64 `json:"paid_money"` // 实付金额 CNY（top_ups.money）
+	PaidMoneyUSD float64 `json:"paid_money_usd"`
+	PaidAmount   float64 `json:"paid_amount"` // 获得额度 USD（top_ups.amount）
 
 	// 未成功（待处理 + 已过期）
-	UnsuccessCount int64   `json:"unsuccess_count"`
-	UnsuccessMoney float64 `json:"unsuccess_money"` // 金额 CNY（top_ups.money）
+	UnsuccessCount    int64   `json:"unsuccess_count"`
+	UnsuccessMoney    float64 `json:"unsuccess_money"` // 金额 CNY（top_ups.money）
+	UnsuccessMoneyUSD float64 `json:"unsuccess_money_usd"`
 
 	// 兑换码使用
 	RedemptionCount    int64   `json:"redemption_count"`
@@ -78,21 +80,26 @@ func GetUserQuotaIncomeSummary(userID int64, startDate, endDate string) (*UserQu
 	}
 
 	type paidAgg struct {
-		Cnt    int64   `db:"cnt"`
-		Money  float64 `db:"money"`
-		Amount float64 `db:"amount"`
+		Cnt       int64   `db:"cnt"`
+		Money     float64 `db:"money"`
+		MoneyUSD  float64 `db:"money_usd"`
+		Amount    float64 `db:"amount"`
+		AmountUSD float64 `db:"amount_usd"`
 	}
 	var paid paidAgg
 	paidSQL := fmt.Sprintf(`SELECT COUNT(*) as cnt,
 		COALESCE(SUM(money), 0) as money,
-		COALESCE(SUM(amount), 0) as amount
-		FROM top_ups WHERE %s`, strings.Join(paidWhere, " AND "))
+		COALESCE(SUM(%s), 0) as money_usd,
+		COALESCE(SUM(amount), 0) as amount,
+		COALESCE(SUM(%s), 0) as amount_usd
+		FROM top_ups WHERE %s`, revenueUSDExpr(), topUpAmountUSDExpr(""), strings.Join(paidWhere, " AND "))
 	if err := db.DB.Get(&paid, paidSQL, paidArgs...); err != nil {
 		return nil, fmt.Errorf("paid top-up aggregate failed: %w", err)
 	}
 	out.PaidCount = paid.Cnt
 	out.PaidMoney = paid.Money
-	out.PaidAmount = paid.Amount
+	out.PaidMoneyUSD = paid.MoneyUSD
+	out.PaidAmount = paid.AmountUSD
 
 	// ---- 未成功（待处理 + 已过期）----
 	unsuccessWhere := []string{
@@ -118,18 +125,21 @@ func GetUserQuotaIncomeSummary(userID int64, startDate, endDate string) (*UserQu
 	}
 
 	type unsuccessAgg struct {
-		Cnt   int64   `db:"cnt"`
-		Money float64 `db:"money"`
+		Cnt      int64   `db:"cnt"`
+		Money    float64 `db:"money"`
+		MoneyUSD float64 `db:"money_usd"`
 	}
 	var unsuccess unsuccessAgg
 	unsuccessSQL := fmt.Sprintf(`SELECT COUNT(*) as cnt,
-		COALESCE(SUM(money), 0) as money
-		FROM top_ups WHERE %s`, strings.Join(unsuccessWhere, " AND "))
+		COALESCE(SUM(money), 0) as money,
+		COALESCE(SUM(%s), 0) as money_usd
+		FROM top_ups WHERE %s`, revenueUSDExpr(), strings.Join(unsuccessWhere, " AND "))
 	if err := db.DB.Get(&unsuccess, unsuccessSQL, unsuccessArgs...); err != nil {
 		return nil, fmt.Errorf("unsuccess top-up aggregate failed: %w", err)
 	}
 	out.UnsuccessCount = unsuccess.Cnt
 	out.UnsuccessMoney = unsuccess.Money
+	out.UnsuccessMoneyUSD = unsuccess.MoneyUSD
 
 	// ---- 兑换码 ----
 	redWhere := []string{

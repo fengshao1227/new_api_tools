@@ -191,3 +191,15 @@ func TestTopUpAnomalyReasons_AllowsSuccessfulMissingCompleteTime(t *testing.T) {
 		t.Fatalf("successful top-up with nullable complete_time should not be anomalous, got %v", reasons)
 	}
 }
+
+func TestTopUpPresentationNormalizesHostedQuotaAndCurrencies(t *testing.T) {
+	if got := topUpAmountUSD(TopUpRecord{Amount: 5_000_000, PaymentProvider: "dodo"}); got != 10 {
+		t.Fatalf("Dodo quota should render as 10 USD, got %v", got)
+	}
+	if got := topUpPaymentCurrency(TopUpRecord{PaymentProvider: "stripe"}); got != "USD" {
+		t.Fatalf("Stripe currency = %q, want USD", got)
+	}
+	if got := topUpPaymentCurrency(TopUpRecord{PaymentMethod: "alipay"}); got != "CNY" {
+		t.Fatalf("Alipay currency = %q, want CNY", got)
+	}
+}
