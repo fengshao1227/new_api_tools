@@ -139,3 +139,61 @@ jobs:
       - name: Inspect image
         run: |
           docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+  deploy-production:
+    name: Deploy to production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: https://beattool.fengshao1227.com
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+      - name: Pull, build, and restart production Tool
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PATH"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' bash -se" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH/src"
+          git fetch origin main
+          git checkout --detach FETCH_HEAD
+          cd "$DEPLOY_PATH"
+          docker build -t beat-newapi-tools:local ./src
+          docker compose -p beat-newapi-tools -f docker-compose.yml up -d --force-recreate tools
+          REMOTE
+
+      - name: Verify production health
+        run: |
+          for _ in $(seq 1 18); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+              https://beattool.fengshao1227.com/api/health || true)
+            if [ "$code" = "200" ]; then
+              echo "production Tool healthy"
+              exit 0
+            fi
+            echo "health=$code, retrying"
+            sleep 10
+          done
+          echo "production Tool health check failed" >&2
+          exit 1
