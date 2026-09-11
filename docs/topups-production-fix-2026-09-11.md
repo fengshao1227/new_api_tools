@@ -18,6 +18,9 @@ The source of truth is this repository, `fengshao1227/new_api_tools`; production
 - The growth trend is deliberately a first-time payer metric. User 499 paid successfully on
   2026-09-06 and paid again on 2026-09-10; showing `0` first-time payers on 2026-09-10 is correct.
   The label now says `首次付费用户` / `First-time paying users`.
+- The growth SQL had one remaining inconsistency: revenue used the normalized success predicate,
+  while the first-payer subquery compared `status = 'success'` literally. It now uses the same
+  predicate, so `success`, `completed`, and legacy numeric `1` rows are counted consistently.
 
 ## Implemented behavior
 
