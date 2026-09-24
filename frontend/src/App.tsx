@@ -17,9 +17,10 @@ const AbuseBroadcast = lazy(() => import('./components/AbuseBroadcast').then(m =
 const ChannelMonitor = lazy(() => import('./components/ChannelMonitor').then(m => ({ default: m.ChannelMonitor })))
 const CheckinAnalytics = lazy(() => import('./components/CheckinAnalytics').then(m => ({ default: m.CheckinAnalytics })))
 const TaskLogs = lazy(() => import('./components/TaskLogs').then(m => ({ default: m.TaskLogs })))
+const MarginAnalysis = lazy(() => import('./components/MarginAnalysis').then(m => ({ default: m.MarginAnalysis })))
 
 // Valid tabs
-const validTabs: TabType[] = ['dashboard', 'topups', 'risk', 'abuse-broadcast', 'ip-analysis', 'analytics', 'model-status', 'users', 'tokens', 'auto-group', 'redemptions', 'channels', 'checkins', 'task-logs']
+const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'risk', 'abuse-broadcast', 'ip-analysis', 'analytics', 'model-status', 'users', 'tokens', 'auto-group', 'redemptions', 'channels', 'checkins', 'task-logs']
 
 // 旧路径迁移：generator / history 现合并到 redemptions 内部 tab
 const legacyRedirects: Record<string, string> = {
@@ -163,6 +164,8 @@ function App() {
         return <RedemptionCenter />
       case 'topups':
         return <TopUps />
+      case 'margin':
+        return <MarginAnalysis />
       case 'risk':
         return <RealtimeRanking />
       case 'abuse-broadcast':

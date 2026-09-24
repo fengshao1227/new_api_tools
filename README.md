@@ -39,6 +39,7 @@
 | 模块 | 能力 |
 |---|---|
 | 统一仪表盘 | 汇总用户、令牌、渠道、模型、兑换码、请求趋势、活跃用户和系统规模。 |
+| 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
 | 兑换码管理 | 批量生成兑换码，支持固定/随机额度、前缀、过期时间、高级筛选、复制和批量删除。 |
 | 风控中心 | 查看高频请求、额度消耗、关联账号、同 IP 注册、Token 轮换、封禁记录和用户风险画像。 |
@@ -125,6 +126,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/james-6-23/new_api_tools/main
 | `DB_MAX_IDLE_CONNS` | 数据库最大空闲连接数 | `15` |
 | `NEWAPI_NETWORK` | NewAPI 所在 Docker 网络 | `new-api_default` |
 | `NEWAPI_BASEURL` | NewAPI 内部地址，用于需要回调上游的功能 | 可选 |
+| `NEWAPI_API_KEY` | new-api 管理员访问令牌，毛利页用它读取权威成本基准和价格簿 | 毛利解析必填 |
 | `REDIS_PASSWORD` | 内置 Redis 密码 | 留空或自定义 |
 | `TIMEZONE` | 服务时区 | `Asia/Shanghai` |
 | `LOG_LEVEL` | 日志级别 | `info` |
@@ -170,6 +172,7 @@ npm run dev
 | 健康检查 | `GET /api/health`、`GET /api/health/db` |
 | 认证 | `POST /api/auth/login`、`POST /api/auth/logout` |
 | 仪表盘 | `GET /api/dashboard/*` |
+| 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景 |
 | 充值 | `GET /api/top-ups`、`GET /api/top-ups/analytics/*` |
 | 兑换码 | `GET /api/redemptions`、`POST /api/redemptions/generate` |
 | 风控 | `GET /api/risk/*`、`GET /api/ip/*`、`POST /api/ai-ban/*` |
