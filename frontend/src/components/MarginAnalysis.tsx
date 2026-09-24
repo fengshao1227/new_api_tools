@@ -147,6 +147,26 @@ function bucketLabel(bucket?: string) {
   }
 }
 
+function pricingStatusLabel(status: string) {
+  switch (status) {
+    case 'healthy': return '健康毛利'
+    case 'thin': return '薄利'
+    case 'loss': return '亏损'
+    case 'unpriced': return '未定价'
+    default: return status || '未知'
+  }
+}
+
+function pricingModeLabel(mode: string) {
+  switch (mode) {
+    case 'tiered_expr': return '表达式分档'
+    case 'per_token': return '输入/输出 token'
+    case 'per_call': return '按次计价'
+    case 'unpriced': return '未定价'
+    default: return mode || '未知'
+  }
+}
+
 async function readAPIResponse(response: Response): Promise<any> {
   const body = await response.text()
   try {
@@ -426,10 +446,10 @@ function PricingScenarioTable({ rows }: { rows: PricingScenario[] }) {
 
 function PricingDetailTable({ rows }: { rows: PricingScenario[] }) {
   if (rows.length === 0) return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">没有匹配的参数场景</div>
-  return <div className="max-h-[720px] overflow-auto rounded-md border"><Table className="min-w-[1040px]"><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>模型</TableHead><TableHead>参数 / 条件</TableHead><TableHead>售价 / 1M</TableHead><TableHead>供应商成本 / 1M</TableHead><TableHead>毛利率范围</TableHead><TableHead>渠道与状态</TableHead></TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${row.model_name}-${row.tier}-${index}`}><TableCell className="align-top font-medium">{row.model_name}</TableCell><TableCell className="align-top"><div>{row.tier}</div><div className="mt-1 text-xs text-muted-foreground">{row.condition_hint || '默认/直接分支'}</div></TableCell><TableCell className="align-top font-mono">{money(row.retail_usd)}</TableCell><TableCell className="align-top"><div className="font-mono">{money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={`最低成本：${row.lowest_cost_channel || '—'}；最高成本：${row.highest_cost_channel || '—'}`}>低：{row.lowest_cost_channel || '—'}<br />高：{row.highest_cost_channel || '—'}</div></TableCell><TableCell className="align-top"><div className="font-mono">{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</div><div className="mt-1 text-xs text-muted-foreground">低成本渠道 → 最高毛利</div></TableCell><TableCell className="align-top"><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{row.status}</Badge><div className="mt-1 text-xs text-muted-foreground">可用 {row.served_routes} · 未定价 {row.unpriced_routes}</div></TableCell></TableRow>)}</TableBody></Table></div>
+  return <div className="max-h-[720px] overflow-auto rounded-md border"><Table className="min-w-[1040px]"><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>模型</TableHead><TableHead>参数 / 条件</TableHead><TableHead>售价 / 1M</TableHead><TableHead>供应商成本 / 1M</TableHead><TableHead>毛利率范围</TableHead><TableHead>渠道与状态</TableHead></TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${row.model_name}-${row.tier}-${index}`}><TableCell className="align-top font-medium">{row.model_name}</TableCell><TableCell className="align-top"><div>{row.tier}</div><div className="mt-1 text-xs text-muted-foreground">{row.condition_hint || '默认/直接分支'}</div></TableCell><TableCell className="align-top font-mono">{money(row.retail_usd)}</TableCell><TableCell className="align-top"><div className="font-mono">{money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={`最低成本：${row.lowest_cost_channel || '—'}；最高成本：${row.highest_cost_channel || '—'}`}>低：{row.lowest_cost_channel || '—'}<br />高：{row.highest_cost_channel || '—'}</div></TableCell><TableCell className="align-top"><div className="font-mono">{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</div><div className="mt-1 text-xs text-muted-foreground">低成本渠道 → 最高毛利</div></TableCell><TableCell className="align-top"><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{pricingStatusLabel(row.status)}</Badge><div className="mt-1 text-xs text-muted-foreground">可用 {row.served_routes} · 未定价 {row.unpriced_routes}</div></TableCell></TableRow>)}</TableBody></Table></div>
 }
 
 function PricingModelTable({ rows }: { rows: PricingModelAnalysis[] }) {
   if (rows.length === 0) return <div className="text-sm text-muted-foreground">没有解析到模型定价</div>
-  return <Table><TableHeader><TableRow><TableHead>模型</TableHead><TableHead>模式</TableHead><TableHead>最高毛利</TableHead><TableHead>最低毛利</TableHead><TableHead>解析条件/表达式</TableHead></TableRow></TableHeader><TableBody>{rows.map((row) => <TableRow key={row.model_name}><TableCell className="font-medium">{row.model_name}</TableCell><TableCell><Badge variant={row.unpriced ? 'destructive' : 'secondary'}>{row.mode}</Badge></TableCell><TableCell className="text-emerald-600">{row.unpriced ? '未定价' : `${percent(row.best_margin_percent)} · ${row.best_scenario || '—'}`}</TableCell><TableCell className={row.worst_margin_percent < 0 ? 'text-red-600' : 'text-amber-600'}>{row.unpriced ? '未定价' : `${percent(row.worst_margin_percent)} · ${row.worst_scenario || '—'}`}</TableCell><TableCell className="max-w-[420px]"><div className="truncate text-xs text-muted-foreground" title={row.expression || ''}>{row.expression || (row.mode === 'per_token' ? `输入 ${money(row.prompt_usd_per_million || 0)}/1M · 输出 ${money(row.completion_usd_per_million || 0)}/1M` : '固定价格')}</div></TableCell></TableRow>)}</TableBody></Table>
+  return <Table><TableHeader><TableRow><TableHead>模型</TableHead><TableHead>模式</TableHead><TableHead>最高毛利</TableHead><TableHead>最低毛利</TableHead><TableHead>解析条件/表达式</TableHead></TableRow></TableHeader><TableBody>{rows.map((row) => <TableRow key={row.model_name}><TableCell className="font-medium">{row.model_name}</TableCell><TableCell><Badge variant={row.unpriced ? 'destructive' : 'secondary'}>{pricingModeLabel(row.mode)}</Badge></TableCell><TableCell className="text-emerald-600">{row.unpriced ? '未定价' : `${percent(row.best_margin_percent)} · ${row.best_scenario || '—'}`}</TableCell><TableCell className={row.worst_margin_percent < 0 ? 'text-red-600' : 'text-amber-600'}>{row.unpriced ? '未定价' : `${percent(row.worst_margin_percent)} · ${row.worst_scenario || '—'}`}</TableCell><TableCell className="max-w-[420px]"><div className="truncate text-xs text-muted-foreground" title={row.expression || ''}>{row.expression || (row.mode === 'per_token' ? `输入 ${money(row.prompt_usd_per_million || 0)}/1M · 输出 ${money(row.completion_usd_per_million || 0)}/1M` : '固定价格')}</div></TableCell></TableRow>)}</TableBody></Table>
 }
