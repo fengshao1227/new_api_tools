@@ -21,20 +21,36 @@ import (
 const pricingAnalysisTimeout = 90 * time.Second
 
 type PricingScenario struct {
-	ModelName            string  `json:"model_name"`
-	Tier                 string  `json:"tier"`
-	ConditionHint        string  `json:"condition_hint,omitempty"`
-	RetailUSD            float64 `json:"retail_usd"`
-	LowestCostUSD        float64 `json:"lowest_cost_usd"`
-	HighestCostUSD       float64 `json:"highest_cost_usd"`
-	HighestMarginPercent float64 `json:"highest_margin_percent"`
-	LowestMarginPercent  float64 `json:"lowest_margin_percent"`
-	LowestCostChannel    string  `json:"lowest_cost_channel,omitempty"`
-	HighestCostChannel   string  `json:"highest_cost_channel,omitempty"`
-	CostRoutes           int     `json:"cost_routes"`
-	UnpricedRoutes       int     `json:"unpriced_routes"`
-	ServedRoutes         int     `json:"served_routes"`
-	Status               string  `json:"status"`
+	ModelName            string         `json:"model_name"`
+	Tier                 string         `json:"tier"`
+	ConditionHint        string         `json:"condition_hint,omitempty"`
+	RetailUSD            float64        `json:"retail_usd"`
+	LowestCostUSD        float64        `json:"lowest_cost_usd"`
+	HighestCostUSD       float64        `json:"highest_cost_usd"`
+	HighestMarginPercent float64        `json:"highest_margin_percent"`
+	LowestMarginPercent  float64        `json:"lowest_margin_percent"`
+	LowestCostChannel    string         `json:"lowest_cost_channel,omitempty"`
+	HighestCostChannel   string         `json:"highest_cost_channel,omitempty"`
+	CostRoutes           int            `json:"cost_routes"`
+	UnpricedRoutes       int            `json:"unpriced_routes"`
+	ServedRoutes         int            `json:"served_routes"`
+	UnservedRoutes       int            `json:"unserved_routes"`
+	Status               string         `json:"status"`
+	Routes               []PricingRoute `json:"routes"`
+}
+
+type PricingRoute struct {
+	ChannelID     int64   `json:"channel_id"`
+	ChannelName   string  `json:"channel_name"`
+	ChannelStatus int     `json:"channel_status"`
+	Priority      int64   `json:"priority"`
+	MatchedTier   string  `json:"matched_tier,omitempty"`
+	Selectable    bool    `json:"selectable"`
+	Unpriced      bool    `json:"unpriced"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	MarginUSD     float64 `json:"margin_usd,omitempty"`
+	MarginPercent float64 `json:"margin_percent,omitempty"`
+	Status        string  `json:"status"`
 }
 
 type PricingModelAnalysis struct {
@@ -75,11 +91,13 @@ type costBaselineEnvelope struct {
 }
 
 type costBaselineRow struct {
-	ModelName   string             `json:"model_name"`
-	ChannelID   int64              `json:"channel_id"`
-	ChannelName string             `json:"channel_name"`
-	Currency    string             `json:"currency"`
-	Tiers       []costBaselineTier `json:"tiers"`
+	ModelName     string             `json:"model_name"`
+	ChannelID     int64              `json:"channel_id"`
+	ChannelName   string             `json:"channel_name"`
+	ChannelStatus int                `json:"channel_status"`
+	Priority      int64              `json:"priority"`
+	Currency      string             `json:"currency"`
+	Tiers         []costBaselineTier `json:"tiers"`
 }
 
 type costBaselineTier struct {
@@ -309,10 +327,14 @@ func fetchPriceBookRows(ctx context.Context, client *pricingHTTPClient, models [
 }
 
 type costCandidate struct {
-	CostUSD     float64
-	ChannelName string
-	Unpriced    bool
-	Serves      bool
+	CostUSD       float64
+	ChannelID     int64
+	ChannelName   string
+	ChannelStatus int
+	Priority      int64
+	MatchedTier   string
+	Unpriced      bool
+	Serves        bool
 }
 
 func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow, quotaPerUnit float64, scenarioPrefix string, normalizeToken bool) *PricingAnalysisResult {
@@ -327,10 +349,14 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 				key = tier.MatchedTier
 			}
 			costs[row.ModelName][key] = append(costs[row.ModelName][key], costCandidate{
-				CostUSD:     tier.Cost / quotaPerUnit,
-				ChannelName: row.ChannelName,
-				Unpriced:    tier.Unpriced,
-				Serves:      tier.Serves,
+				CostUSD:       tier.Cost / quotaPerUnit,
+				ChannelID:     row.ChannelID,
+				ChannelName:   row.ChannelName,
+				ChannelStatus: row.ChannelStatus,
+				Priority:      row.Priority,
+				MatchedTier:   tier.MatchedTier,
+				Unpriced:      tier.Unpriced,
+				Serves:        tier.Serves,
 			})
 		}
 	}
@@ -489,21 +515,39 @@ func flattenCandidates(byTier map[string][]costCandidate) []costCandidate {
 }
 
 func makePricingScenario(model, tier, condition string, retail float64, candidates []costCandidate) PricingScenario {
-	scenario := PricingScenario{ModelName: model, Tier: tier, ConditionHint: condition, RetailUSD: retail}
+	scenario := PricingScenario{ModelName: model, Tier: tier, ConditionHint: condition, RetailUSD: retail, Routes: make([]PricingRoute, 0, len(candidates))}
 	minCost := math.Inf(1)
 	maxCost := math.Inf(-1)
 	for _, candidate := range candidates {
-		if candidate.Unpriced {
+		enabled := candidate.ChannelStatus == 0 || candidate.ChannelStatus == 1
+		route := PricingRoute{
+			ChannelID:     candidate.ChannelID,
+			ChannelName:   candidate.ChannelName,
+			ChannelStatus: candidate.ChannelStatus,
+			Priority:      candidate.Priority,
+			MatchedTier:   candidate.MatchedTier,
+			Selectable:    enabled && candidate.Serves,
+			Unpriced:      candidate.Unpriced,
+			CostUSD:       candidate.CostUSD,
+		}
+		if !enabled {
+			route.Status = "disabled"
+		} else if !candidate.Serves {
+			route.Status = "unsupported"
+			scenario.UnservedRoutes++
+		} else if candidate.Unpriced {
+			route.Status = "unpriced"
 			scenario.UnpricedRoutes++
+			scenario.ServedRoutes++
+		} else {
+			route.Status = "priced"
+			scenario.ServedRoutes++
+			scenario.CostRoutes++
 		}
-		if !candidate.Serves {
+		scenario.Routes = append(scenario.Routes, route)
+		if !route.Selectable || candidate.Unpriced {
 			continue
 		}
-		scenario.ServedRoutes++
-		if candidate.Unpriced {
-			continue
-		}
-		scenario.CostRoutes++
 		if candidate.CostUSD < minCost {
 			minCost = candidate.CostUSD
 			scenario.LowestCostChannel = candidate.ChannelName
@@ -521,6 +565,27 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 	scenario.HighestCostUSD = maxCost
 	scenario.HighestMarginPercent = (retail - minCost) / retail * 100
 	scenario.LowestMarginPercent = (retail - maxCost) / retail * 100
+	for index := range scenario.Routes {
+		route := &scenario.Routes[index]
+		if !route.Selectable || route.Unpriced {
+			continue
+		}
+		route.MarginUSD = retail - route.CostUSD
+		route.MarginPercent = route.MarginUSD / retail * 100
+	}
+	sort.SliceStable(scenario.Routes, func(i, j int) bool {
+		left, right := scenario.Routes[i], scenario.Routes[j]
+		if left.Selectable != right.Selectable {
+			return left.Selectable
+		}
+		if left.Unpriced != right.Unpriced {
+			return !left.Unpriced
+		}
+		if left.CostUSD != right.CostUSD {
+			return left.CostUSD < right.CostUSD
+		}
+		return left.Priority < right.Priority
+	})
 	switch {
 	case scenario.LowestMarginPercent < 0:
 		scenario.Status = "loss"

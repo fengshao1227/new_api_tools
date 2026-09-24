@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, BarChart3, CalendarDays, RefreshCw, ShieldAlert, TrendingUp } from 'lucide-react'
+import { AlertTriangle, BarChart3, CalendarDays, ChevronRight, RefreshCw, ShieldAlert, TrendingUp } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch, createAuthHeaders } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -89,6 +89,22 @@ interface PricingScenario {
   cost_routes: number
   unpriced_routes: number
   served_routes: number
+  unserved_routes: number
+  status: string
+  routes: PricingRoute[]
+}
+
+interface PricingRoute {
+  channel_id: number
+  channel_name: string
+  channel_status: number
+  priority: number
+  matched_tier?: string
+  selectable: boolean
+  unpriced: boolean
+  cost_usd: number
+  margin_usd: number
+  margin_percent: number
   status: string
 }
 
@@ -164,6 +180,16 @@ function pricingModeLabel(mode: string) {
     case 'per_call': return '按次计价'
     case 'unpriced': return '未定价'
     default: return mode || '未知'
+  }
+}
+
+function pricingRouteStatusLabel(status: string) {
+  switch (status) {
+    case 'priced': return '可选'
+    case 'unpriced': return '未定价'
+    case 'disabled': return '已禁用'
+    case 'unsupported': return '不支持此参数'
+    default: return status || '未知'
   }
 }
 
@@ -445,8 +471,34 @@ function PricingScenarioTable({ rows }: { rows: PricingScenario[] }) {
 }
 
 function PricingDetailTable({ rows }: { rows: PricingScenario[] }) {
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (key: string) => setExpanded((current) => {
+    const next = new Set(current)
+    if (!next.delete(key)) next.add(key)
+    return next
+  })
   if (rows.length === 0) return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">没有匹配的参数场景</div>
-  return <div className="max-h-[720px] overflow-auto rounded-md border"><Table className="min-w-[1040px]"><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>模型</TableHead><TableHead>参数 / 条件</TableHead><TableHead>售价 / 1M</TableHead><TableHead>供应商成本 / 1M</TableHead><TableHead>毛利率范围</TableHead><TableHead>渠道与状态</TableHead></TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${row.model_name}-${row.tier}-${index}`}><TableCell className="align-top font-medium">{row.model_name}</TableCell><TableCell className="align-top"><div>{row.tier}</div><div className="mt-1 text-xs text-muted-foreground">{row.condition_hint || '默认/直接分支'}</div></TableCell><TableCell className="align-top font-mono">{money(row.retail_usd)}</TableCell><TableCell className="align-top"><div className="font-mono">{money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={`最低成本：${row.lowest_cost_channel || '—'}；最高成本：${row.highest_cost_channel || '—'}`}>低：{row.lowest_cost_channel || '—'}<br />高：{row.highest_cost_channel || '—'}</div></TableCell><TableCell className="align-top"><div className="font-mono">{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</div><div className="mt-1 text-xs text-muted-foreground">低成本渠道 → 最高毛利</div></TableCell><TableCell className="align-top"><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{pricingStatusLabel(row.status)}</Badge><div className="mt-1 text-xs text-muted-foreground">可用 {row.served_routes} · 未定价 {row.unpriced_routes}</div></TableCell></TableRow>)}</TableBody></Table></div>
+
+  return <div className="max-h-[720px] overflow-auto rounded-md border"><Table className="min-w-[1040px]"><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>模型</TableHead><TableHead>参数 / 条件</TableHead><TableHead>售价 / 1M</TableHead><TableHead>供应商成本 / 1M</TableHead><TableHead>毛利率范围</TableHead><TableHead>渠道与状态</TableHead></TableRow></TableHeader><TableBody>{rows.flatMap((row, index) => {
+    const key = `${row.model_name}-${row.tier}-${index}`
+    const routes = row.routes || []
+    return [
+      <TableRow key={key} className="cursor-pointer" aria-expanded={expanded.has(key)} onClick={() => toggle(key)}>
+        <TableCell className="align-top font-medium">{row.model_name}</TableCell>
+        <TableCell className="align-top"><div className="flex items-center gap-1"><ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground transition-transform', expanded.has(key) && 'rotate-90')} />{row.tier}</div><div className="mt-1 text-xs text-muted-foreground">{row.condition_hint || '默认/直接分支'}</div></TableCell>
+        <TableCell className="align-top font-mono">{money(row.retail_usd)}</TableCell>
+        <TableCell className="align-top"><div className="font-mono">{money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={`最低成本：${row.lowest_cost_channel || '—'}；最高成本：${row.highest_cost_channel || '—'}`}>低：{row.lowest_cost_channel || '—'}<br />高：{row.highest_cost_channel || '—'}</div></TableCell>
+        <TableCell className="align-top"><div className="font-mono">{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</div><div className="mt-1 text-xs text-muted-foreground">低成本渠道 → 最高毛利</div></TableCell>
+        <TableCell className="align-top"><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{pricingStatusLabel(row.status)}</Badge><div className="mt-1 text-xs text-muted-foreground">可选 {row.served_routes} · 未定价 {row.unpriced_routes} · 不支持 {row.unserved_routes}</div></TableCell>
+      </TableRow>,
+      ...(expanded.has(key) ? [<TableRow key={`${key}-routes`} className="hover:bg-transparent"><TableCell colSpan={6} className="bg-muted/30 p-0"><PricingRouteBreakdown routes={routes} /></TableCell></TableRow>] : []),
+    ]
+  })}</TableBody></Table></div>
+}
+
+function PricingRouteBreakdown({ routes }: { routes: PricingRoute[] }) {
+  if (routes.length === 0) return <div className="p-4 text-xs text-muted-foreground">没有返回渠道明细。</div>
+  return <div className="divide-y divide-border/60"><div className="flex items-center gap-3 px-4 py-2 text-[11px] text-muted-foreground"><span className="w-14 shrink-0">渠道 ID</span><span className="min-w-0 flex-1">渠道</span><span className="w-24 shrink-0">分支</span><span className="w-20 shrink-0 text-right">优先级</span><span className="w-24 shrink-0 text-right">成本</span><span className="w-24 shrink-0 text-right">毛利率</span><span className="w-24 shrink-0 text-right">状态</span></div>{routes.map((route) => <div key={`${route.channel_id}-${route.status}`} className={cn('flex items-center gap-3 px-4 py-2 text-xs', !route.selectable && 'text-muted-foreground')}><span className="w-14 shrink-0 font-mono">#{route.channel_id}</span><span className="min-w-0 flex-1 truncate" title={route.channel_name}>{route.channel_name}</span><span className="w-24 shrink-0 truncate text-muted-foreground">{route.matched_tier || '—'}</span><span className="w-20 shrink-0 text-right font-mono text-muted-foreground">{route.priority}</span><span className="w-24 shrink-0 text-right font-mono">{route.unpriced || !route.selectable ? '—' : money(route.cost_usd)}</span><span className={cn('w-24 shrink-0 text-right font-mono', route.margin_percent < 0 && 'text-red-600')}>{route.unpriced || !route.selectable ? '—' : percent(route.margin_percent)}</span><span className="w-24 shrink-0 text-right"><Badge variant={route.status === 'priced' ? 'success' : route.status === 'unpriced' ? 'warning' : 'secondary'}>{pricingRouteStatusLabel(route.status)}</Badge></span></div>)}</div>
 }
 
 function PricingModelTable({ rows }: { rows: PricingModelAnalysis[] }) {

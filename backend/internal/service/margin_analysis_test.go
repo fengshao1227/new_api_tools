@@ -139,3 +139,23 @@ func TestPricingConditionHintsHandleNestedTernaries(t *testing.T) {
 		t.Fatalf("fallback condition = %q", got)
 	}
 }
+
+func TestMakePricingScenarioExcludesDisabledChannelsFromMarginRange(t *testing.T) {
+	scenario := makePricingScenario("image", "2K", `u("resolution") == "2K"`, 0.05, []costCandidate{
+		{ChannelID: 1, ChannelName: "enabled", ChannelStatus: 1, Priority: 10, CostUSD: 0.05, Serves: true},
+		{ChannelID: 2, ChannelName: "manually-disabled", ChannelStatus: 2, Priority: 1, CostUSD: 0.09, Serves: true},
+	})
+
+	if scenario.LowestCostUSD != 0.05 || scenario.HighestCostUSD != 0.05 {
+		t.Fatalf("disabled channel changed cost range = %v..%v", scenario.LowestCostUSD, scenario.HighestCostUSD)
+	}
+	if scenario.LowestMarginPercent != 0 || scenario.HighestMarginPercent != 0 {
+		t.Fatalf("margin range = %v..%v, want 0..0", scenario.LowestMarginPercent, scenario.HighestMarginPercent)
+	}
+	if scenario.ServedRoutes != 1 || scenario.UnservedRoutes != 0 || len(scenario.Routes) != 2 {
+		t.Fatalf("route accounting = served %d/unserved %d/routes %d", scenario.ServedRoutes, scenario.UnservedRoutes, len(scenario.Routes))
+	}
+	if scenario.Routes[0].ChannelName != "enabled" || !scenario.Routes[0].Selectable || scenario.Routes[1].Status != "disabled" {
+		t.Fatalf("route detail did not preserve selectable/disabled state: %+v", scenario.Routes)
+	}
+}
