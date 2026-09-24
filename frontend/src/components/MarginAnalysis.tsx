@@ -225,6 +225,7 @@ export function MarginAnalysis() {
   const [pricing, setPricing] = useState<PricingResult | null>(null)
   const [pricingLoading, setPricingLoading] = useState(false)
   const [pricingError, setPricingError] = useState<string | null>(null)
+  const [pricingQuery, setPricingQuery] = useState('')
   const [section, setSection] = useState<MarginSection>('overview')
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -277,6 +278,12 @@ export function MarginAnalysis() {
   }, [loadPricing, pricing, pricingError, section])
 
   const maxDaily = useMemo(() => Math.max(1, ...(data?.daily || []).flatMap((row) => [row.revenue_usd, row.provider_cost_usd])), [data?.daily])
+  const pricingScenarioRows = useMemo(() => {
+    const query = pricingQuery.trim().toLowerCase()
+    return (pricing?.models || [])
+      .flatMap((model) => model.scenarios)
+      .filter((row) => !query || `${row.model_name} ${row.tier} ${row.condition_hint || ''}`.toLowerCase().includes(query))
+  }, [pricing?.models, pricingQuery])
 
   if (loading) {
     return <div className="min-h-[420px] flex items-center justify-center text-sm text-muted-foreground">正在读取消费日志并核算赠额来源…</div>
@@ -393,6 +400,16 @@ export function MarginAnalysis() {
               <Card><CardHeader><CardTitle className="text-lg">最高毛利场景</CardTitle><CardDescription>同一模型/档位下，选择可服务渠道的最低供应商成本。</CardDescription></CardHeader><CardContent><PricingScenarioTable rows={pricing.best.slice(0, 10)} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-lg">最低毛利场景</CardTitle><CardDescription>同一模型/档位下，选择可服务渠道的最高供应商成本。</CardDescription></CardHeader><CardContent><PricingScenarioTable rows={pricing.worst.slice(0, 10)} /></CardContent></Card>
             </div>
+            <Card>
+              <CardHeader className="gap-3">
+                <div><CardTitle>所有模型 · 参数与条件明细</CardTitle><CardDescription>每一行都是一个可计价参数场景；成本范围来自已服务渠道的最低/最高供应商报价。</CardDescription></div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Input value={pricingQuery} onChange={(event) => setPricingQuery(event.target.value)} placeholder="筛选模型、参数或条件…" className="sm:max-w-sm" />
+                  <span className="text-xs text-muted-foreground">显示 {number(pricingScenarioRows.length)} / {number(pricing.models.reduce((count, model) => count + model.scenarios.length, 0))} 个参数场景</span>
+                </div>
+              </CardHeader>
+              <CardContent><PricingDetailTable rows={pricingScenarioRows} /></CardContent>
+            </Card>
             <Card><CardHeader><CardTitle>完整定价解析</CardTitle><CardDescription>每个模型的模式、最优/最差毛利和原始条件表达式。</CardDescription></CardHeader><CardContent><PricingModelTable rows={pricing.models} /></CardContent></Card>
             <div className="space-y-2">{pricing.notes.map((note) => <div key={note} className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">{note}</div>)}</div>
           </div>
@@ -404,7 +421,12 @@ export function MarginAnalysis() {
 
 function PricingScenarioTable({ rows }: { rows: PricingScenario[] }) {
   if (rows.length === 0) return <div className="text-sm text-muted-foreground">没有可定价场景</div>
-  return <div className="space-y-2">{rows.map((row, index) => <div key={`${row.model_name}-${row.tier}-${index}`} className="rounded-md border p-2.5 text-xs"><div className="flex items-center justify-between gap-2"><span className="font-medium">{row.model_name} · {row.tier}</span><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</Badge></div><div className="mt-1 text-muted-foreground">售价 {money(row.retail_usd)} · 成本 {money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 text-muted-foreground">{row.condition_hint || '表达式默认分支'} · 路由 {row.cost_routes}</div></div>)}</div>
+  return <div className="space-y-2">{rows.map((row, index) => <div key={`${row.model_name}-${row.tier}-${index}`} className="rounded-md border p-2.5 text-xs"><div className="flex items-center justify-between gap-2"><span className="font-medium">{row.model_name} · {row.tier}</span><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>毛利 {percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</Badge></div><div className="mt-1 text-muted-foreground">售价 {money(row.retail_usd)} · 成本 {money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 text-muted-foreground">{row.condition_hint || '表达式默认分支'} · 可用渠道 {row.served_routes} · 未定价 {row.unpriced_routes}</div></div>)}</div>
+}
+
+function PricingDetailTable({ rows }: { rows: PricingScenario[] }) {
+  if (rows.length === 0) return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">没有匹配的参数场景</div>
+  return <div className="max-h-[720px] overflow-auto rounded-md border"><Table className="min-w-[1040px]"><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>模型</TableHead><TableHead>参数 / 条件</TableHead><TableHead>售价 / 1M</TableHead><TableHead>供应商成本 / 1M</TableHead><TableHead>毛利率范围</TableHead><TableHead>渠道与状态</TableHead></TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${row.model_name}-${row.tier}-${index}`}><TableCell className="align-top font-medium">{row.model_name}</TableCell><TableCell className="align-top"><div>{row.tier}</div><div className="mt-1 text-xs text-muted-foreground">{row.condition_hint || '默认/直接分支'}</div></TableCell><TableCell className="align-top font-mono">{money(row.retail_usd)}</TableCell><TableCell className="align-top"><div className="font-mono">{money(row.lowest_cost_usd)} ~ {money(row.highest_cost_usd)}</div><div className="mt-1 max-w-[220px] truncate text-xs text-muted-foreground" title={`最低成本：${row.lowest_cost_channel || '—'}；最高成本：${row.highest_cost_channel || '—'}`}>低：{row.lowest_cost_channel || '—'}<br />高：{row.highest_cost_channel || '—'}</div></TableCell><TableCell className="align-top"><div className="font-mono">{percent(row.lowest_margin_percent)} ~ {percent(row.highest_margin_percent)}</div><div className="mt-1 text-xs text-muted-foreground">低成本渠道 → 最高毛利</div></TableCell><TableCell className="align-top"><Badge variant={row.status === 'loss' ? 'destructive' : row.status === 'thin' ? 'warning' : 'success'}>{row.status}</Badge><div className="mt-1 text-xs text-muted-foreground">可用 {row.served_routes} · 未定价 {row.unpriced_routes}</div></TableCell></TableRow>)}</TableBody></Table></div>
 }
 
 function PricingModelTable({ rows }: { rows: PricingModelAnalysis[] }) {
