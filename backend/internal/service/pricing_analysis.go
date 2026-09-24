@@ -60,6 +60,11 @@ type PricingAnalysisResult struct {
 	Notes        []string               `json:"notes"`
 }
 
+type pricingProbe struct {
+	Label  string
+	Tokens string
+}
+
 type costBaselineEnvelope struct {
 	Success bool `json:"success"`
 	Data    struct {
@@ -175,12 +180,9 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 	probe := url.Values{}
 	probe.Set("tokens", "p:1000000,c:1000000,len:1000000,cr:0,cc:0")
 	probe.Set("usage", "duration:1,seconds:1,n:1,credits:1")
-	var costEnvelope costBaselineEnvelope
-	if err := client.getJSON(ctx, "/api/data/cost-baseline", probe, &costEnvelope); err != nil {
+	costEnvelope, err := fetchCostBaseline(ctx, client, probe)
+	if err != nil {
 		return nil, err
-	}
-	if !costEnvelope.Success {
-		return nil, fmt.Errorf("new-api 成本基准返回失败: %s", costEnvelope.Message)
 	}
 
 	modelSet := make(map[string]bool)
@@ -206,7 +208,30 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 	if quotaPerUnit <= 0 {
 		quotaPerUnit = util.TokensPerUSD
 	}
-	result := combinePricingAnalysis(costEnvelope.Data.Rows, priceRows, quotaPerUnit)
+	result := combinePricingAnalysis(costEnvelope.Data.Rows, priceRows, quotaPerUnit, "", false)
+	// Token expressions need separate input/output/cache scenarios. Probing p
+	// and c together produces misleading values such as $12,000,000 for a
+	// $2/$10 per-million-token price.
+	for _, tokenProbe := range []pricingProbe{
+		{Label: "输入 1M token", Tokens: "p:1000000,c:0,len:1000000,cr:0,cc:0"},
+		{Label: "输出 1M token", Tokens: "p:0,c:1000000,len:1000000,cr:0,cc:0"},
+		{Label: "缓存读取 1M", Tokens: "p:0,c:0,len:1000000,cr:1000000,cc:0"},
+		{Label: "缓存创建 1M", Tokens: "p:0,c:0,len:1000000,cr:0,cc:1000000"},
+	} {
+		probe := url.Values{}
+		probe.Set("tokens", tokenProbe.Tokens)
+		probe.Set("usage", "duration:1,seconds:1,n:1,credits:1")
+		probeCost, probeErr := fetchCostBaseline(ctx, client, probe)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		probePrices, probeErr := fetchPriceBookRows(ctx, client, models, probe)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		mergeTokenProbe(result, combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, tokenProbe.Label, true), tokenProbe.Label)
+	}
+	rebuildPricingExtremes(result)
 	result.Notes = []string{
 		"成本基准与价格簿由 new-api 当前计费引擎解析，插件只负责汇总和展示。",
 		"最高毛利使用可服务渠道中的最低成本；最低毛利使用可服务渠道中的最高成本。",
@@ -215,6 +240,17 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 	}
 	cm.Set(cacheKey, result, 10*time.Minute)
 	return result, nil
+}
+
+func fetchCostBaseline(ctx context.Context, client *pricingHTTPClient, probe url.Values) (costBaselineEnvelope, error) {
+	var envelope costBaselineEnvelope
+	if err := client.getJSON(ctx, "/api/data/cost-baseline", probe, &envelope); err != nil {
+		return envelope, err
+	}
+	if !envelope.Success {
+		return envelope, fmt.Errorf("new-api 成本基准返回失败: %s", envelope.Message)
+	}
+	return envelope, nil
 }
 
 func configuredModelNames() []string {
@@ -279,7 +315,7 @@ type costCandidate struct {
 	Serves      bool
 }
 
-func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow, quotaPerUnit float64) *PricingAnalysisResult {
+func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow, quotaPerUnit float64, scenarioPrefix string, normalizeToken bool) *PricingAnalysisResult {
 	costs := make(map[string]map[string][]costCandidate)
 	for _, row := range costRows {
 		if costs[row.ModelName] == nil {
@@ -312,13 +348,21 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 		switch price.Mode {
 		case "tiered_expr":
 			for _, tier := range append(append([]priceBookTier{}, price.Tiers...), price.UnnamedTiers...) {
-				model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, tier.Tier, pricingConditionHint(price.Expr, tier.Tier), tier.USD, costs[price.ModelName][tier.Tier]))
+				retail := tier.USD
+				if normalizeToken && hasTokenExpression(price.Expr) {
+					retail /= 1_000_000
+				}
+				tierName := tier.Tier
+				if scenarioPrefix != "" {
+					tierName = scenarioPrefix + " · " + tierName
+				}
+				model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, tierName, pricingConditionHint(price.Expr, tier.Tier), retail, costs[price.ModelName][tier.Tier]))
 			}
 		case "per_call":
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, "per_call", "每次请求固定价", price.PerCallUSD, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "per_call"), "每次请求固定价", price.PerCallUSD, flattenCandidates(costs[price.ModelName])))
 		case "per_token":
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, "input_1m", "每 1M 输入 token", price.PromptUSDPerMillion, flattenCandidates(costs[price.ModelName])))
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, "output_1m", "每 1M 输出 token", price.CompletionUSDPerMillion, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "input_1m"), "每 1M 输入 token", price.PromptUSDPerMillion, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "output_1m"), "每 1M 输出 token", price.CompletionUSDPerMillion, flattenCandidates(costs[price.ModelName])))
 		default:
 			model.Unpriced = true
 		}
@@ -356,6 +400,83 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 		result.Best = result.Best[:20]
 	}
 	return result
+}
+
+func hasTokenExpression(expr string) bool {
+	for _, token := range []string{"p", "c", "cr", "cc", "cc1h", "img", "img_o", "ai", "ao", "len"} {
+		if strings.Contains(expr, token+" *") || strings.Contains(expr, token+"*") || strings.Contains(expr, token+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func scenarioName(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + " · " + name
+}
+
+func mergeTokenProbe(base, probe *PricingAnalysisResult, prefix string) {
+	for i := range base.Models {
+		if !hasTokenExpression(base.Models[i].Expression) {
+			continue
+		}
+		if prefix == "输入 1M token" {
+			base.Models[i].Scenarios = nil
+		}
+		for _, probeModel := range probe.Models {
+			if probeModel.ModelName != base.Models[i].ModelName {
+				continue
+			}
+			if base.Models[i].Scenarios == nil {
+				base.Models[i].Scenarios = make([]PricingScenario, 0)
+			}
+			for _, scenario := range probeModel.Scenarios {
+				if !strings.HasPrefix(scenario.Tier, prefix+" · ") {
+					continue
+				}
+				base.Models[i].Scenarios = append(base.Models[i].Scenarios, scenario)
+			}
+			break
+		}
+	}
+}
+
+func rebuildPricingExtremes(result *PricingAnalysisResult) {
+	result.Best = result.Best[:0]
+	result.Worst = result.Worst[:0]
+	for i := range result.Models {
+		model := &result.Models[i]
+		model.BestMarginPercent = 0
+		model.WorstMarginPercent = 0
+		model.BestScenario = ""
+		model.WorstScenario = ""
+		for _, scenario := range model.Scenarios {
+			if scenario.Status == "unpriced" {
+				continue
+			}
+			if model.BestScenario == "" || scenario.HighestMarginPercent > model.BestMarginPercent {
+				model.BestMarginPercent = scenario.HighestMarginPercent
+				model.BestScenario = scenario.Tier
+			}
+			if model.WorstScenario == "" || scenario.LowestMarginPercent < model.WorstMarginPercent {
+				model.WorstMarginPercent = scenario.LowestMarginPercent
+				model.WorstScenario = scenario.Tier
+			}
+			result.Best = append(result.Best, scenario)
+			result.Worst = append(result.Worst, scenario)
+		}
+	}
+	sort.Slice(result.Best, func(i, j int) bool { return result.Best[i].HighestMarginPercent > result.Best[j].HighestMarginPercent })
+	sort.Slice(result.Worst, func(i, j int) bool { return result.Worst[i].LowestMarginPercent < result.Worst[j].LowestMarginPercent })
+	if len(result.Best) > 20 {
+		result.Best = result.Best[:20]
+	}
+	if len(result.Worst) > 20 {
+		result.Worst = result.Worst[:20]
+	}
 }
 
 func flattenCandidates(byTier map[string][]costCandidate) []costCandidate {
