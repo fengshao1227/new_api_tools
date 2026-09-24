@@ -286,6 +286,8 @@ func (s *MarginAnalysisService) GetMarginAnalysis(params MarginAnalysisParams) (
 func (s *MarginAnalysisService) loadMarginRows(params MarginAnalysisParams) ([]marginGroupRow, error) {
 	tzOffset := localTZOffset()
 	dayGroup := fmt.Sprintf("FLOOR((created_at + %d) / 86400)", tzOffset)
+	unpricedExpr := marginJSONFieldCondition(s.logDB, "unpriced", "true")
+	estimatedExpr := marginJSONFieldCondition(s.logDB, "cost_source", "estimated")
 	query := s.logDB.RebindQuery(fmt.Sprintf(`
 		SELECT user_id, COALESCE(username, '') AS username,
 			%s AS day_group, COALESCE(model_name, '') AS model_name,
@@ -294,12 +296,12 @@ func (s *MarginAnalysisService) loadMarginRows(params MarginAnalysisParams) ([]m
 			COUNT(*) AS requests,
 			COALESCE(SUM(quota), 0) AS quota,
 			COALESCE(SUM(cost), 0) AS cost,
-			COALESCE(SUM(CASE WHEN other LIKE '%%"unpriced":true%%' OR other LIKE '%%"unpriced": true%%' THEN 1 ELSE 0 END), 0) AS unpriced_calls,
-			COALESCE(SUM(CASE WHEN other LIKE '%%"cost_source":"estimated"%%' OR other LIKE '%%"cost_source": "estimated"%%' THEN 1 ELSE 0 END), 0) AS estimated_calls
+			COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS unpriced_calls,
+			COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS estimated_calls
 		FROM logs
 		WHERE type = 2 AND created_at >= ? AND created_at <= ?
 		GROUP BY user_id, username, %s, model_name, channel_id, channel_name
-		ORDER BY day_group ASC`, dayGroup, dayGroup))
+		ORDER BY day_group ASC`, dayGroup, unpricedExpr, estimatedExpr, dayGroup))
 	dbRows, err := s.logDB.QueryWithTimeout(marginAnalysisTimeout, query, params.StartTime, params.EndTime)
 	if err != nil {
 		return nil, fmt.Errorf("margin log aggregation failed: %w", err)
@@ -321,6 +323,24 @@ func (s *MarginAnalysisService) loadMarginRows(params MarginAnalysisParams) ([]m
 		})
 	}
 	return rows, nil
+}
+
+// marginJSONFieldCondition extracts the admin-only cost markers using the log
+// database's native JSON functions. String LIKE matching silently misses field
+// spacing/order changes and is especially fragile when logs are copied through
+// ClickHouse.
+func marginJSONFieldCondition(db *database.Manager, field, expected string) string {
+	if db.IsCH {
+		if field == "unpriced" {
+			return "JSONExtractBool(other, 'admin_info.unpriced')"
+		}
+		return fmt.Sprintf("JSONExtractString(other, 'admin_info.%s') = '%s'", field, expected)
+	}
+	if db.IsPG {
+		path := fmt.Sprintf("NULLIF(other, '')::jsonb #>> '{admin_info,%s}'", field)
+		return fmt.Sprintf("%s = '%s'", path, expected)
+	}
+	return fmt.Sprintf("JSON_VALID(other) AND JSON_UNQUOTE(JSON_EXTRACT(other, '$.admin_info.%s')) = '%s'", field, expected)
 }
 
 func buildIDInQuery(db *database.Manager, prefix string, ids []int64) (string, []interface{}) {

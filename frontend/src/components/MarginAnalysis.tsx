@@ -145,6 +145,15 @@ function bucketLabel(bucket?: string) {
   }
 }
 
+async function readAPIResponse(response: Response): Promise<any> {
+  const body = await response.text()
+  try {
+    return JSON.parse(body)
+  } catch {
+    throw new Error(`接口返回了非 JSON 响应（HTTP ${response.status}），请检查插件 API 路由和代理配置`)
+  }
+}
+
 function MetricCard({ title, value, detail, tone = 'default' }: { title: string; value: string; detail: string; tone?: 'default' | 'positive' | 'warning' | 'danger' }) {
   return (
     <Card className={cn(
@@ -230,7 +239,7 @@ export function MarginAnalysis() {
       const response = await apiFetch(`${apiUrl}/api/margin-analysis?${params.toString()}`, {
         headers: createAuthHeaders(token),
       })
-      const payload = await response.json()
+      const payload = await readAPIResponse(response)
       if (!response.ok || !payload.success) throw new Error(payload.error?.message || '毛利分析加载失败')
       setData(payload.data)
     } catch (loadError) {
@@ -251,7 +260,7 @@ export function MarginAnalysis() {
       const response = await apiFetch(`${apiUrl}/api/margin-analysis/pricing`, {
         headers: createAuthHeaders(token),
       })
-      const payload = await response.json()
+      const payload = await readAPIResponse(response)
       if (!response.ok || !payload.success) throw new Error(payload.error?.message || '成本基准加载失败')
       setPricing(payload.data)
     } catch (pricingLoadError) {
