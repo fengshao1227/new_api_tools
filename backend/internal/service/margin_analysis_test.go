@@ -159,3 +159,12 @@ func TestMakePricingScenarioExcludesDisabledChannelsFromMarginRange(t *testing.T
 		t.Fatalf("route detail did not preserve selectable/disabled state: %+v", scenario.Routes)
 	}
 }
+
+func TestMakePricingScenarioTreatsZeroCostAsUnpriced(t *testing.T) {
+	scenario := makePricingScenario("text", "cache_create", "", 12.5, []costCandidate{
+		{ChannelID: 1, ChannelName: "zero-probe", ChannelStatus: 1, CostUSD: 0, Serves: true},
+	})
+	if scenario.Status != "unpriced" || scenario.UnpricedRoutes != 1 || scenario.CostRoutes != 0 {
+		t.Fatalf("zero cost route = status %q/unpriced %d/cost %d", scenario.Status, scenario.UnpricedRoutes, scenario.CostRoutes)
+	}
+}

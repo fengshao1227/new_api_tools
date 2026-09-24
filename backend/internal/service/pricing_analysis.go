@@ -79,6 +79,7 @@ type PricingAnalysisResult struct {
 type pricingProbe struct {
 	Label  string
 	Tokens string
+	Usage  string
 }
 
 type costBaselineEnvelope struct {
@@ -231,14 +232,14 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 	// and c together produces misleading values such as $12,000,000 for a
 	// $2/$10 per-million-token price.
 	for _, tokenProbe := range []pricingProbe{
-		{Label: "输入 1M token", Tokens: "p:1000000,c:0,len:1000000,cr:0,cc:0"},
-		{Label: "输出 1M token", Tokens: "p:0,c:1000000,len:1000000,cr:0,cc:0"},
-		{Label: "缓存读取 1M", Tokens: "p:0,c:0,len:1000000,cr:1000000,cc:0"},
-		{Label: "缓存创建 1M", Tokens: "p:0,c:0,len:1000000,cr:0,cc:1000000"},
+		{Label: "输入 1M token", Tokens: "p:1000000,c:0,len:1000000,cr:0,cc:0", Usage: "duration:1,seconds:1,n:1,credits:1,prompt_tokens:1000000,completion_tokens:0,input_tokens:1000000,output_tokens:0"},
+		{Label: "输出 1M token", Tokens: "p:0,c:1000000,len:1000000,cr:0,cc:0", Usage: "duration:1,seconds:1,n:1,credits:1,prompt_tokens:0,completion_tokens:1000000,input_tokens:0,output_tokens:1000000"},
+		{Label: "缓存读取 1M", Tokens: "p:0,c:0,len:1000000,cr:1000000,cc:0", Usage: "duration:1,seconds:1,n:1,credits:1,prompt_tokens:0,completion_tokens:0,input_tokens:0,output_tokens:0"},
+		{Label: "缓存创建 1M", Tokens: "p:0,c:0,len:1000000,cr:0,cc:1000000", Usage: "duration:1,seconds:1,n:1,credits:1,prompt_tokens:0,completion_tokens:0,input_tokens:0,output_tokens:0"},
 	} {
 		probe := url.Values{}
 		probe.Set("tokens", tokenProbe.Tokens)
-		probe.Set("usage", "duration:1,seconds:1,n:1,credits:1")
+		probe.Set("usage", tokenProbe.Usage)
 		probeCost, probeErr := fetchCostBaseline(ctx, client, probe)
 		if probeErr != nil {
 			return nil, probeErr
@@ -247,7 +248,11 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 		if probeErr != nil {
 			return nil, probeErr
 		}
-		mergeTokenProbe(result, combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, tokenProbe.Label, true), tokenProbe.Label)
+		probeResult := combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, tokenProbe.Label, true)
+		mergeTokenProbe(result, probeResult, tokenProbe.Label)
+		if tokenProbe.Label == "输入 1M token" {
+			repairNonTokenScenarioCosts(result, combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, "", false))
+		}
 	}
 	rebuildPricingExtremes(result)
 	result.Notes = []string{
@@ -355,7 +360,7 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 				ChannelStatus: row.ChannelStatus,
 				Priority:      row.Priority,
 				MatchedTier:   tier.MatchedTier,
-				Unpriced:      tier.Unpriced,
+				Unpriced:      tier.Unpriced || tier.Cost <= 0,
 				Serves:        tier.Serves,
 			})
 		}
@@ -430,7 +435,7 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 }
 
 func hasTokenExpression(expr string) bool {
-	for _, token := range []string{"p", "c", "cr", "cc", "cc1h", "img", "img_o", "ai", "ao", "len"} {
+	for _, token := range []string{"p", "c", "cr", "cc", "cc1h", "img", "img_o", "ai", "ao", "len", "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens", "cached_tokens", "cache_read_tokens", "cache_write_tokens"} {
 		if strings.Contains(expr, token+" *") || strings.Contains(expr, token+"*") || strings.Contains(expr, token+" ") {
 			return true
 		}
@@ -465,6 +470,39 @@ func mergeTokenProbe(base, probe *PricingAnalysisResult, prefix string) {
 					continue
 				}
 				base.Models[i].Scenarios = append(base.Models[i].Scenarios, scenario)
+			}
+			break
+		}
+	}
+}
+
+// repairNonTokenScenarioCosts reuses the input-token/usage probe for public
+// image, video, and task expressions. Those expressions still sell their
+// normal resolution/tier scenarios, but a provider channel may only evaluate
+// after prompt_tokens/completion_tokens are supplied. Without this repair the
+// route is incorrectly shown as unpriced even though the expression has a
+// valid estimate branch.
+func repairNonTokenScenarioCosts(base, probe *PricingAnalysisResult) {
+	for modelIndex := range base.Models {
+		model := &base.Models[modelIndex]
+		if hasTokenExpression(model.Expression) {
+			continue
+		}
+		for _, probeModel := range probe.Models {
+			if probeModel.ModelName != model.ModelName {
+				continue
+			}
+			for scenarioIndex := range model.Scenarios {
+				current := model.Scenarios[scenarioIndex]
+				for _, candidate := range probeModel.Scenarios {
+					if candidate.Tier != current.Tier || candidate.Status == "unpriced" {
+						continue
+					}
+					if current.Status == "unpriced" || candidate.CostRoutes > current.CostRoutes {
+						model.Scenarios[scenarioIndex] = candidate
+					}
+					break
+				}
 			}
 			break
 		}
@@ -520,6 +558,7 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 	maxCost := math.Inf(-1)
 	for _, candidate := range candidates {
 		enabled := candidate.ChannelStatus == 0 || candidate.ChannelStatus == 1
+		unpriced := candidate.Unpriced || candidate.CostUSD <= 0
 		route := PricingRoute{
 			ChannelID:     candidate.ChannelID,
 			ChannelName:   candidate.ChannelName,
@@ -527,7 +566,7 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 			Priority:      candidate.Priority,
 			MatchedTier:   candidate.MatchedTier,
 			Selectable:    enabled && candidate.Serves,
-			Unpriced:      candidate.Unpriced,
+			Unpriced:      unpriced,
 			CostUSD:       candidate.CostUSD,
 		}
 		if !enabled {
@@ -535,7 +574,7 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 		} else if !candidate.Serves {
 			route.Status = "unsupported"
 			scenario.UnservedRoutes++
-		} else if candidate.Unpriced {
+		} else if unpriced {
 			route.Status = "unpriced"
 			scenario.UnpricedRoutes++
 			scenario.ServedRoutes++
@@ -545,7 +584,7 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 			scenario.CostRoutes++
 		}
 		scenario.Routes = append(scenario.Routes, route)
-		if !route.Selectable || candidate.Unpriced {
+		if !route.Selectable || unpriced {
 			continue
 		}
 		if candidate.CostUSD < minCost {
