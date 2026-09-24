@@ -112,3 +112,30 @@ func TestMakePricingScenarioReportsBestAndWorstServedRoute(t *testing.T) {
 		t.Fatalf("route selection = %q/%q", scenario.LowestCostChannel, scenario.HighestCostChannel)
 	}
 }
+
+func TestPricingConditionHintsFollowEachTernaryBranch(t *testing.T) {
+	hints := pricingConditionHints(`u("resolution") == "4K" ? tier("4K", u("n") * 0.1) : u("resolution") == "2K" ? tier("2K", u("n") * 0.05) : tier("1K", u("n") * 0.05)`)
+	want := map[string]string{
+		"4K": `u("resolution") == "4K"`,
+		"2K": `否则（u("resolution") == "4K"） 且 u("resolution") == "2K"`,
+		"1K": `否则（u("resolution") == "4K"） 且 否则（u("resolution") == "2K"）`,
+	}
+	for tier, expected := range want {
+		if hints[tier] != expected {
+			t.Fatalf("condition for %s = %q, want %q", tier, hints[tier], expected)
+		}
+	}
+}
+
+func TestPricingConditionHintsHandleNestedTernaries(t *testing.T) {
+	hints := pricingConditionHints(`u("credits") > 0 ? (u("resolution") == "1080p" ? tier("1080p", u("credits") * 0.005) : tier("720p", u("credits") * 0.004)) : tier("duration", u("duration") * 0.1)`)
+	if got := hints["1080p"]; got != `u("credits") > 0 且 u("resolution") == "1080p"` {
+		t.Fatalf("nested 1080p condition = %q", got)
+	}
+	if got := hints["720p"]; got != `u("credits") > 0 且 否则（u("resolution") == "1080p"）` {
+		t.Fatalf("nested 720p condition = %q", got)
+	}
+	if got := hints["duration"]; got != `否则（u("credits") > 0）` {
+		t.Fatalf("fallback condition = %q", got)
+	}
+}

@@ -347,6 +347,7 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 		}
 		switch price.Mode {
 		case "tiered_expr":
+			conditionHints := pricingConditionHints(price.Expr)
 			for _, tier := range append(append([]priceBookTier{}, price.Tiers...), price.UnnamedTiers...) {
 				retail := tier.USD
 				if normalizeToken && hasTokenExpression(price.Expr) {
@@ -356,7 +357,7 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 				if scenarioPrefix != "" {
 					tierName = scenarioPrefix + " · " + tierName
 				}
-				model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, tierName, pricingConditionHint(price.Expr, tier.Tier), retail, costs[price.ModelName][tier.Tier]))
+				model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, tierName, conditionHints[tier.Tier], retail, costs[price.ModelName][tier.Tier]))
 			}
 		case "per_call":
 			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "per_call"), "每次请求固定价", price.PerCallUSD, flattenCandidates(costs[price.ModelName])))
@@ -531,23 +532,182 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 	return scenario
 }
 
-func pricingConditionHint(expr, tier string) string {
-	if strings.TrimSpace(expr) == "" {
-		return ""
+// pricingConditionHints recovers the path condition for each tier in the
+// small ternary expression language used by new-api's price book. A simple
+// "last ?" lookup is incorrect for chained or nested ternaries: it labels
+// every branch with the first condition (for example, 1K as 2K and 272k_plus
+// as len <= 272000). The parser below only understands the operators needed
+// for display and deliberately leaves the original expression as the source
+// of truth for evaluation.
+func pricingConditionHints(expr string) map[string]string {
+	hints := make(map[string]string)
+	collectPricingConditions(strings.TrimSpace(expr), "", hints)
+	return hints
+}
+
+func collectPricingConditions(expr, inherited string, hints map[string]string) {
+	expr = strings.TrimSpace(expr)
+	for {
+		unwrapped := unwrapPricingParens(expr)
+		if unwrapped == expr {
+			break
+		}
+		expr = unwrapped
 	}
-	needle := fmt.Sprintf("tier(\"%s\"", tier)
-	index := strings.Index(expr, needle)
-	if index < 0 {
-		return "完整表达式中未找到该 tier"
+
+	question := findTopLevelPricingQuestion(expr)
+	if question >= 0 {
+		colon := findMatchingPricingColon(expr, question)
+		if colon >= 0 {
+			condition := strings.TrimSpace(expr[:question])
+			collectPricingConditions(expr[question+1:colon], joinPricingConditions(inherited, condition), hints)
+			collectPricingConditions(expr[colon+1:], joinPricingConditions(inherited, "否则（"+condition+"）"), hints)
+			return
+		}
 	}
-	prefix := expr[:index]
-	question := strings.LastIndex(prefix, "?")
-	if question < 0 {
-		return "默认/直接 tier 分支"
+
+	for offset := 0; offset < len(expr); {
+		index := strings.Index(expr[offset:], `tier("`)
+		if index < 0 {
+			break
+		}
+		index += offset + len(`tier("`)
+		end := strings.IndexByte(expr[index:], '"')
+		if end < 0 {
+			break
+		}
+		name := expr[index : index+end]
+		condition := inherited
+		if condition == "" {
+			condition = "默认/直接 tier 分支"
+		}
+		addPricingCondition(hints, name, condition)
+		offset = index + end
 	}
-	condition := strings.TrimSpace(prefix[strings.LastIndex(prefix[:question], ":")+1 : question])
-	if condition == "" {
-		return "条件分支"
+
+	for index := 0; index < len(expr); index++ {
+		if expr[index] != '(' {
+			continue
+		}
+		end := matchingPricingParen(expr, index)
+		if end < 0 {
+			break
+		}
+		inner := expr[index+1 : end]
+		if strings.Contains(inner, "?") || strings.Contains(inner, `tier("`) {
+			collectPricingConditions(inner, inherited, hints)
+		}
+		index = end
 	}
-	return condition
+}
+
+func addPricingCondition(hints map[string]string, tier, condition string) {
+	if previous := hints[tier]; previous != "" && previous != condition {
+		hints[tier] = previous + "；或；" + condition
+		return
+	}
+	hints[tier] = condition
+}
+
+func joinPricingConditions(parent, child string) string {
+	parent = strings.TrimSpace(parent)
+	child = strings.TrimSpace(child)
+	if parent == "" {
+		return child
+	}
+	if child == "" {
+		return parent
+	}
+	return parent + " 且 " + child
+}
+
+func unwrapPricingParens(expr string) string {
+	if len(expr) < 2 || expr[0] != '(' {
+		return expr
+	}
+	if matchingPricingParen(expr, 0) != len(expr)-1 {
+		return expr
+	}
+	return strings.TrimSpace(expr[1 : len(expr)-1])
+}
+
+func findTopLevelPricingQuestion(expr string) int {
+	depth := 0
+	for index := 0; index < len(expr); index++ {
+		switch expr[index] {
+		case '"':
+			index = skipPricingString(expr, index)
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '?':
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func findMatchingPricingColon(expr string, question int) int {
+	depth := 0
+	nestedQuestions := 0
+	for index := question + 1; index < len(expr); index++ {
+		switch expr[index] {
+		case '"':
+			index = skipPricingString(expr, index)
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '?':
+			if depth == 0 {
+				nestedQuestions++
+			}
+		case ':':
+			if depth == 0 {
+				if nestedQuestions == 0 {
+					return index
+				}
+				nestedQuestions--
+			}
+		}
+	}
+	return -1
+}
+
+func matchingPricingParen(expr string, start int) int {
+	depth := 0
+	for index := start; index < len(expr); index++ {
+		switch expr[index] {
+		case '"':
+			index = skipPricingString(expr, index)
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func skipPricingString(expr string, start int) int {
+	for index := start + 1; index < len(expr); index++ {
+		if expr[index] == '\\' {
+			index++
+			continue
+		}
+		if expr[index] == '"' {
+			return index
+		}
+	}
+	return len(expr) - 1
 }
