@@ -47,12 +47,14 @@ type MarginSummary struct {
 	PaidTrafficCostUSD    float64 `json:"paid_traffic_cost_usd"`
 	GiftAndFreeCostUSD    float64 `json:"gift_and_free_cost_usd"`
 	InternalCostUSD       float64 `json:"internal_cost_usd"`
+	NonRevenueCostUSD     float64 `json:"non_revenue_cost_usd"`
 	GiftNominalUSD        float64 `json:"gift_nominal_usd"`
 	GiftProviderCostUSD   float64 `json:"gift_provider_cost_usd"`
 	PaidCustomerCount     int64   `json:"paid_customer_count"`
 	FreeCustomerCount     int64   `json:"free_customer_count"`
 	ManualCreditUserCount int64   `json:"manual_credit_user_count"`
 	InternalUserCount     int64   `json:"internal_user_count"`
+	NonRevenueUserCount   int64   `json:"non_revenue_user_count"`
 	UnpricedCalls         int64   `json:"unpriced_calls"`
 	EstimatedCalls        int64   `json:"estimated_calls"`
 	UnpricedCostUSD       float64 `json:"unpriced_cost_usd"`
@@ -138,6 +140,7 @@ type marginAccumulator struct {
 	PaidTrafficCost  float64
 	GiftFreeCost     float64
 	InternalCost     float64
+	NonRevenueCost   float64
 	GiftNominalQuota float64
 	GiftProviderCost float64
 	UnpricedCalls    int64
@@ -147,7 +150,7 @@ type marginAccumulator struct {
 }
 
 func isPaidMarginBucket(bucket string) bool {
-	return bucket == "customer_paid" || bucket == "deleted_paid"
+	return bucket == "customer_paid"
 }
 
 func isInternalMarginBucket(bucket string) bool {
@@ -173,6 +176,15 @@ func addMarginGroup(acc *marginAccumulator, row marginGroupRow, state marginUser
 		acc.GiftNominalQuota += giftQuota
 		return
 	}
+	if state.Bucket == "deleted_paid" {
+		// A deleted account with a successful payment is not safe evidence of
+		// revenue: this is the bucket used for chargeback/black-card cleanup.
+		// Keep every supplier bill, but recognize no customer revenue.
+		acc.NonRevenueCost += row.Cost
+		acc.GiftProviderCost += giftCost
+		acc.GiftNominalQuota += giftQuota
+		return
+	}
 	if isInternalMarginBucket(state.Bucket) {
 		acc.InternalCost += row.Cost
 		return
@@ -192,6 +204,7 @@ func (a marginAccumulator) merge(other marginAccumulator) marginAccumulator {
 	a.PaidTrafficCost += other.PaidTrafficCost
 	a.GiftFreeCost += other.GiftFreeCost
 	a.InternalCost += other.InternalCost
+	a.NonRevenueCost += other.NonRevenueCost
 	a.GiftNominalQuota += other.GiftNominalQuota
 	a.GiftProviderCost += other.GiftProviderCost
 	a.UnpricedCalls += other.UnpricedCalls
@@ -581,6 +594,7 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 	paidTrafficCost := marginMoney(total.PaidTrafficCost)
 	giftFreeCost := marginMoney(total.GiftFreeCost)
 	internalCost := marginMoney(total.InternalCost)
+	nonRevenueCost := marginMoney(total.NonRevenueCost)
 	result := &MarginAnalysisResult{
 		Range: MarginAnalysisRange{
 			Start:     params.StartTime,
@@ -598,17 +612,19 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 			ProviderCostUSD:       providerCost,
 			GrossProfitUSD:        grossProfit,
 			GrossMarginPercent:    marginPercent(grossProfit, paidRevenue),
-			ExternalProfitUSD:     paidRevenue - paidTrafficCost - giftFreeCost,
-			ExternalMarginPercent: marginPercent(paidRevenue-paidTrafficCost-giftFreeCost, paidRevenue),
+			ExternalProfitUSD:     paidRevenue - paidTrafficCost - giftFreeCost - nonRevenueCost,
+			ExternalMarginPercent: marginPercent(paidRevenue-paidTrafficCost-giftFreeCost-nonRevenueCost, paidRevenue),
 			PaidTrafficCostUSD:    paidTrafficCost,
 			GiftAndFreeCostUSD:    giftFreeCost,
 			InternalCostUSD:       internalCost,
+			NonRevenueCostUSD:     nonRevenueCost,
 			GiftNominalUSD:        marginMoney(total.GiftNominalQuota),
 			GiftProviderCostUSD:   marginMoney(total.GiftProviderCost),
-			PaidCustomerCount:     countMarginBuckets(states, "customer_paid", "deleted_paid"),
+			PaidCustomerCount:     countMarginBuckets(states, "customer_paid"),
 			FreeCustomerCount:     countMarginBuckets(states, "customer_free", "deleted_no_payment"),
 			ManualCreditUserCount: countMarginBuckets(states, "manual_or_test_credit"),
 			InternalUserCount:     countMarginBuckets(states, "staff_or_root"),
+			NonRevenueUserCount:   countMarginBuckets(states, "deleted_paid"),
 			UnpricedCalls:         total.UnpricedCalls,
 			EstimatedCalls:        total.EstimatedCalls,
 			UnpricedCostUSD:       marginMoney(total.UnpricedCost),
@@ -622,7 +638,7 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 			"收入按已结算消费日志计算，未使用的充值余额不计入。",
 			"注册赠额从收入中剔除；赠额与免费账号产生的供应商成本仍计入。",
 			"unpriced 成本不会被当成免费，需结合供应商账单继续对账。",
-			"管理员、测试和手工授信账号单独列为内部成本，不自动视为现金收入。",
+			"管理员、测试和手工授信账号单独列为内部成本；已删除/拒付账号不自动视为现金收入，但供应商成本全额计入不可回收成本。",
 		},
 	}
 	return result, nil

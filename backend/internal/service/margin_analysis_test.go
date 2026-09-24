@@ -78,6 +78,20 @@ func TestAddMarginGroupPaidRevenueExcludesGiftPortion(t *testing.T) {
 	}
 }
 
+func TestAddMarginGroupDeletedPaidAccountHasNoRevenue(t *testing.T) {
+	state := marginUserState{Bucket: "deleted_paid"}
+	row := marginGroupRow{Requests: 1, Quota: 500000, Cost: 400000}
+	var acc marginAccumulator
+	addMarginGroup(&acc, row, state, 0, 0)
+
+	if acc.RevenueQuota != 0 {
+		t.Fatalf("deleted paid revenue = %v, want 0", acc.RevenueQuota)
+	}
+	if acc.NonRevenueCost != 400000 || acc.ProviderCost != 400000 {
+		t.Fatalf("deleted paid cost = non-revenue %v/provider %v", acc.NonRevenueCost, acc.ProviderCost)
+	}
+}
+
 func TestMakePricingScenarioReportsBestAndWorstServedRoute(t *testing.T) {
 	scenario := makePricingScenario("demo", "1080p", "resolution == 1080p", 1.0, []costCandidate{
 		{CostUSD: 0.2, ChannelName: "cheap", Serves: true},

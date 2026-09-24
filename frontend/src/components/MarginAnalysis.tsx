@@ -22,12 +22,14 @@ interface MarginSummary {
   paid_traffic_cost_usd: number
   gift_and_free_cost_usd: number
   internal_cost_usd: number
+  non_revenue_cost_usd: number
   gift_nominal_usd: number
   gift_provider_cost_usd: number
   paid_customer_count: number
   free_customer_count: number
   manual_credit_user_count: number
   internal_user_count: number
+  non_revenue_user_count: number
   unpriced_calls: number
   estimated_calls: number
   unpriced_cost_usd: number
@@ -333,7 +335,7 @@ export function MarginAnalysis() {
         <MetricCard title="实际消费收入" value={money(summary.realized_revenue_usd)} detail={`${number(summary.requests)} 次消费，已排除赠额名义收入`} tone="positive" />
         <MetricCard title="供应商成本" value={money(summary.provider_cost_usd)} detail={`付费流量 ${money(summary.paid_traffic_cost_usd)} · 免费/赠额 ${money(summary.gift_and_free_cost_usd)}`} tone="warning" />
         <MetricCard title="全成本毛利" value={money(summary.gross_profit_usd)} detail={`毛利率 ${percent(summary.gross_margin_percent)} · 含内部/测试成本`} tone={summary.gross_profit_usd >= 0 ? 'positive' : 'danger'} />
-        <MetricCard title="外部业务毛利" value={money(summary.external_profit_usd)} detail={`剔除内部成本后，毛利率 ${percent(summary.external_margin_percent)}`} tone="positive" />
+        <MetricCard title="外部业务毛利" value={money(summary.external_profit_usd)} detail={`毛利率 ${percent(summary.external_margin_percent)} · 拒付/删除成本 ${money(summary.non_revenue_cost_usd)}`} tone="positive" />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
