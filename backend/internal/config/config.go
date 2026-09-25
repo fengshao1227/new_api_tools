@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -191,9 +193,18 @@ func buildRedisConnString() string {
 	}
 
 	if pass != "" {
-		return fmt.Sprintf("redis://:%s@%s:%s/0", pass, host, port)
+		// Redis 6+ authenticates through the ACL default user. An empty
+		// username makes go-redis send a two-argument AUTH with a blank user,
+		// which Redis rejects as WRONGPASS. Build the URL with an explicit
+		// default user and let net/url escape passwords containing URI syntax.
+		return (&url.URL{
+			Scheme: "redis",
+			Host:   net.JoinHostPort(host, port),
+			User:   url.UserPassword("default", pass),
+			Path:   "/0",
+		}).String()
 	}
-	return fmt.Sprintf("redis://%s:%s/0", host, port)
+	return (&url.URL{Scheme: "redis", Host: net.JoinHostPort(host, port), Path: "/0"}).String()
 }
 
 // Get returns the global config, panics if not loaded

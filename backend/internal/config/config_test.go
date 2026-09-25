@@ -28,3 +28,27 @@ func TestClickHouseIsNotDetectedAsMainDatabase(t *testing.T) {
 		t.Fatalf("detectEngine returned ClickHouse for the main database")
 	}
 }
+
+func TestBuildRedisConnStringUsesDefaultUserAndEscapesPassword(t *testing.T) {
+	t.Setenv("REDIS_HOST", "beat-newapi-tools-redis")
+	t.Setenv("REDIS_PORT", "6379")
+	t.Setenv("REDIS_PASSWORD", "pa@ss:word")
+
+	got := buildRedisConnString()
+	want := "redis://default:pa%40ss%3Aword@beat-newapi-tools-redis:6379/0"
+	if got != want {
+		t.Fatalf("buildRedisConnString() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRedisConnStringWithoutPassword(t *testing.T) {
+	t.Setenv("REDIS_HOST", "redis")
+	t.Setenv("REDIS_PORT", "6379")
+	t.Setenv("REDIS_PASSWORD", "")
+
+	got := buildRedisConnString()
+	want := "redis://redis:6379/0"
+	if got != want {
+		t.Fatalf("buildRedisConnString() = %q, want %q", got, want)
+	}
+}

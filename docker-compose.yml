@@ -38,8 +38,11 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - JWT_SECRET_KEY=${JWT_SECRET}
       - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
-      # Redis 缓存
-      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      # Redis 缓存：插件同时接入网关网络，不能使用会撞名的 `redis` 服务名。
+      # 交给配置层用 ACL default 用户和 URL 编码构造连接串。
+      - REDIS_HOST=beat-newapi-tools-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       # 服务配置
       # SERVER_HOST 默认 127.0.0.1（仅供容器内 Nginx 反代访问，对外端口由 Nginx 暴露）
       # 如需让其他容器/宿主机直连 Go 后端 8000，可在 .env 中改为 0.0.0.0（不推荐，安全风险）

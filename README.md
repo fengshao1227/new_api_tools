@@ -127,6 +127,8 @@ bash <(curl -sSL https://raw.githubusercontent.com/james-6-23/new_api_tools/main
 | `NEWAPI_NETWORK` | NewAPI 所在 Docker 网络 | `new-api_default` |
 | `NEWAPI_BASEURL` | NewAPI 内部地址，用于需要回调上游的功能 | 可选 |
 | `NEWAPI_API_KEY` | new-api 管理员访问令牌，毛利页用它读取权威成本基准和价格簿 | 毛利解析必填 |
+| `REDIS_HOST` | Redis 容器主机名；接入网关网络时避免使用会撞名的 `redis` | `beat-newapi-tools-redis` |
+| `REDIS_PORT` | Redis 端口 | `6379` |
 | `REDIS_PASSWORD` | 内置 Redis 密码 | 留空或自定义 |
 | `TIMEZONE` | 服务时区 | `Asia/Shanghai` |
 | `LOG_LEVEL` | 日志级别 | `info` |
