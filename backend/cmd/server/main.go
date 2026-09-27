@@ -95,6 +95,7 @@ func main() {
 		handler.RegisterUserManagementRoutes(api)
 		handler.RegisterPanelWhitelistRoutes(api)
 		handler.RegisterAffiliateStatsRoutes(api)
+		handler.RegisterAcquisitionRoutes(api)
 		handler.RegisterLogAnalyticsRoutes(api)
 
 		// Phase 2.3: IP Monitoring, Risk Monitoring, Model Status

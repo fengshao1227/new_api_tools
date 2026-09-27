@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react'
-import { LayoutDashboard, Ticket, DollarSign, BarChart3, Users, LogOut, Activity, Globe, Monitor, UserPlus, Key, RadioTower, Bell, Menu, X, Server, CalendarCheck, Settings, ListChecks, TrendingUp } from 'lucide-react'
+import { LayoutDashboard, Ticket, DollarSign, BarChart3, Users, LogOut, Activity, Globe, Monitor, UserPlus, Key, RadioTower, Bell, Menu, X, Server, CalendarCheck, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import {
@@ -9,7 +9,7 @@ import { cn } from '../lib/utils'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch, createAuthHeaders } from '../lib/api'
 
-export type TabType = 'dashboard' | 'risk' | 'abuse-broadcast' | 'ip-analysis' | 'redemptions' | 'topups' | 'margin' | 'analytics' | 'model-status' | 'users' | 'auto-group' | 'tokens' | 'channels' | 'checkins' | 'task-logs'
+export type TabType = 'dashboard' | 'risk' | 'abuse-broadcast' | 'ip-analysis' | 'redemptions' | 'topups' | 'margin' | 'analytics' | 'acquisition' | 'model-status' | 'users' | 'auto-group' | 'tokens' | 'channels' | 'checkins' | 'task-logs'
 
 interface DbStatus {
   connected: boolean
@@ -33,6 +33,7 @@ const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'abuse-broadcast', label: '联合广播', icon: RadioTower },
   { id: 'ip-analysis', label: 'IP分析', icon: Globe },
   { id: 'analytics', label: '日志分析', icon: BarChart3 },
+  { id: 'acquisition', label: '来源分析', icon: GitBranch },
   { id: 'task-logs', label: '任务日志', icon: ListChecks },
   { id: 'model-status', label: '模型监控', icon: Monitor },
   { id: 'channels', label: '渠道监控', icon: Server },

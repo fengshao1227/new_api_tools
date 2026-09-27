@@ -39,6 +39,7 @@
 | 模块 | 能力 |
 |---|---|
 | 统一仪表盘 | 汇总用户、令牌、渠道、模型、兑换码、请求趋势、活跃用户和系统规模。 |
+| 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细拆分注册用户，并对照成功充值标记已付费、未付费和付费率。 |
 | 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
 | 兑换码管理 | 批量生成兑换码，支持固定/随机额度、前缀、过期时间、高级筛选、复制和批量删除。 |
@@ -180,6 +181,7 @@ npm run dev
 | 风控 | `GET /api/risk/*`、`GET /api/ip/*`、`POST /api/ai-ban/*` |
 | 联合广播 | `GET /api/abuse-broadcast/*`、`POST /api/abuse-broadcast/*` |
 | 模型状态 | `GET /api/model-status/*`、`GET /api/embed/model-status/*` |
+| 来源分析 | `GET /api/acquisition/overview?days=30`（`days=0` 为全部时间） |
 | 用户与令牌 | `GET /api/users`、`GET /api/tokens`、`GET /api/auto-group/*` |
 | 存储与系统 | `GET /api/storage/*`、`GET /api/system/*` |
 
