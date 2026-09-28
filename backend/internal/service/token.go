@@ -30,19 +30,11 @@ type TokenInfo struct {
 	Group          string `json:"group"`
 }
 
-// TokenStatistics holds aggregate token counts
-type TokenStatistics struct {
-	Total    int64 `json:"total"`
-	Active   int64 `json:"active"`
-	Disabled int64 `json:"disabled"`
-	Expired  int64 `json:"expired"`
-}
-
 // TokenListParams holds query parameters for listing tokens
 type TokenListParams struct {
 	Page     int
 	PageSize int
-	Status   string // "active", "disabled", "expired", ""
+	Status   string // effective state: "active", "disabled", "expired", "exhausted", ""
 	Name     string
 	Key      string // exact token key match (sk- prefix is stripped)
 	UserID   int64
@@ -127,13 +119,8 @@ func (s *TokenService) ListTokens(params TokenListParams) (map[string]interface{
 		args = append(args, params.Group)
 	}
 
-	switch params.Status {
-	case "active":
-		conditions = append(conditions, "t.status = 1")
-	case "disabled":
-		conditions = append(conditions, "t.status != 1")
-	case "expired":
-		conditions = append(conditions, fmt.Sprintf("t.expired_time > 0 AND t.expired_time <= %d", now))
+	if cond := tokenStatusCondition(params.Status, now); cond != "" {
+		conditions = append(conditions, cond)
 	}
 
 	// 安全审计筛选
@@ -239,6 +226,7 @@ func (s *TokenService) ListTokens(params TokenListParams) (map[string]interface{
 			"user_id":         row["user_id"],
 			"username":        row["username"],
 			"status":          row["status"],
+			"state":           tokenRowState(row, now),
 			"quota":           row["quota"],
 			"used_quota":      row["used_quota"],
 			"remain_quota":    row["remain_quota"],
@@ -538,6 +526,7 @@ func (s *TokenService) GetSuspectedLeaks(hours, minIPs, limit int) ([]map[string
 			"user_id":         row["user_id"],
 			"username":        row["username"],
 			"status":          row["status"],
+			"state":           tokenRowState(row, time.Now().Unix()),
 			"remain_quota":    row["remain_quota"],
 			"unlimited_quota": row["unlimited_quota"],
 			"used_quota":      row["used_quota"],
@@ -577,33 +566,4 @@ func (s *TokenService) GetTokenGroups() ([]map[string]interface{}, error) {
 		return []map[string]interface{}{}, nil
 	}
 	return rows, nil
-}
-
-// GetTokenStatistics returns aggregate token counts
-func (s *TokenService) GetTokenStatistics() (*TokenStatistics, error) {
-	now := time.Now().Unix()
-
-	query := s.db.RebindQuery(fmt.Sprintf(`
-		SELECT
-			COUNT(*) as total,
-			SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as active,
-			SUM(CASE WHEN status != 1 THEN 1 ELSE 0 END) as disabled,
-			SUM(CASE WHEN expired_time > 0 AND expired_time <= %d THEN 1 ELSE 0 END) as expired
-		FROM tokens
-		WHERE deleted_at IS NULL`, now))
-
-	row, err := s.db.QueryOne(query)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &TokenStatistics{}, nil
-	}
-
-	return &TokenStatistics{
-		Total:    toInt64(row["total"]),
-		Active:   toInt64(row["active"]),
-		Disabled: toInt64(row["disabled"]),
-		Expired:  toInt64(row["expired"]),
-	}, nil
 }

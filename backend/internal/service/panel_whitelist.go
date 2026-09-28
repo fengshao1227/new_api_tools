@@ -47,14 +47,20 @@ var globalPanelWL = &panelWhitelistStore{
 }
 
 func defaultPanelWhitelistPath() string {
+	return defaultDataFilePath("panel_whitelist.json")
+}
+
+// defaultDataFilePath places a Tool-owned file in its data directory:
+// DATA_DIR, else the container's /app/data volume, else ./data.
+func defaultDataFilePath(name string) string {
 	if d := os.Getenv("DATA_DIR"); d != "" {
-		return filepath.Join(d, "panel_whitelist.json")
+		return filepath.Join(d, name)
 	}
 	// 容器内常见路径
 	if _, err := os.Stat("/app/data"); err == nil {
-		return "/app/data/panel_whitelist.json"
+		return filepath.Join("/app/data", name)
 	}
-	return filepath.Join("data", "panel_whitelist.json")
+	return filepath.Join("data", name)
 }
 
 func init() {

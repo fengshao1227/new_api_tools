@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useToast } from './Toast'
 import { useAuth } from '../contexts/AuthContext'
-import { Key, Loader2, RefreshCw, Filter, Search, CheckCircle2, XCircle, AlertCircle, Clock, Tag, ShieldBan, ShieldCheck, Globe, Infinity as InfinityIcon, CalendarOff } from 'lucide-react'
+import { Key, Loader2, RefreshCw, Filter, Search, CheckCircle2, XCircle, AlertCircle, Clock, Tag, ShieldBan, ShieldCheck, Globe, Infinity as InfinityIcon, CalendarOff, BatteryLow } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -12,6 +12,7 @@ import { StatCard } from './StatCard'
 import { UserAnalysisDialog } from './UserAnalysisDialog'
 import { TokenBatchDisableDialog } from './TokenBatchDisableDialog'
 import { TokenAnalysisDialog } from './TokenAnalysisDialog'
+import { TokenAuditLog } from './TokenAuditLog'
 import { cn } from '../lib/utils'
 
 interface TokenRecord {
@@ -21,6 +22,8 @@ interface TokenRecord {
   user_id: number
   username: string
   status: number
+  // 有效状态：网关带 Redis 时过期/耗尽的令牌仍存 status=1，由后端按网关自己的判定换算
+  state?: TokenState
   quota: number
   used_quota: number
   remain_quota: number
@@ -50,7 +53,10 @@ interface TokenStatistics {
   active: number
   disabled: number
   expired: number
+  exhausted: number
 }
+
+type TokenState = 'active' | 'disabled' | 'expired' | 'exhausted' | 'unknown'
 
 interface PaginatedResponse {
   items: TokenRecord[]
@@ -60,7 +66,7 @@ interface PaginatedResponse {
   total_pages: number
 }
 
-type StatusFilter = '' | 'active' | 'disabled' | 'expired'
+type StatusFilter = '' | 'active' | 'disabled' | 'expired' | 'exhausted'
 
 export function Tokens() {
   const { showToast } = useToast()
@@ -90,6 +96,7 @@ export function Tokens() {
   const [tokenAnalysisOpen, setTokenAnalysisOpen] = useState(false)
   const [selectedToken, setSelectedToken] = useState<{ id: number; name: string } | null>(null)
   const [selectedUser, setSelectedUser] = useState<{ id: number; username: string } | null>(null)
+  const [auditRefresh, setAuditRefresh] = useState(0)
 
   const apiUrl = import.meta.env.VITE_API_URL || ''
   const getAuthHeaders = useCallback(() => ({
@@ -195,10 +202,12 @@ export function Tokens() {
       if (data.success) {
         const n = op === 'disable' ? data.data.disabled : data.data.enabled
         showToast('success', op === 'disable' ? `已禁用 ${n} 个令牌` : `已启用 ${n} 个令牌`)
+        if (data.data.audit_recorded === false) showToast('error', '操作已生效，但审计记录写入失败')
         await Promise.all([fetchTokens(), fetchStatistics()])
       } else {
         showToast('error', data.message || '操作失败')
       }
+      setAuditRefresh(k => k + 1)
     } catch (error) {
       showToast('error', '网络错误，请重试')
       console.error('Failed to batch operate tokens:', error)
@@ -243,13 +252,13 @@ export function Tokens() {
   }
 
   const getStatusBadge = (record: TokenRecord) => {
-    if (isTokenExpired(record.expired_time)) {
-      return <Badge variant="destructive">已过期</Badge>
+    switch (record.state) {
+      case 'active': return <Badge variant="success">启用</Badge>
+      case 'disabled': return <Badge variant="secondary">手动禁用</Badge>
+      case 'expired': return <Badge variant="destructive">已过期</Badge>
+      case 'exhausted': return <Badge variant="warning">额度耗尽</Badge>
+      default: return <Badge variant="outline">状态 {record.status}</Badge>
     }
-    if (record.status === 1) {
-      return <Badge variant="success">启用</Badge>
-    }
-    return <Badge variant="secondary">禁用</Badge>
   }
 
   const ipCountOf = (t: TokenRecord) => t.ip_count ?? ipStats.get(t.id) ?? 0
@@ -315,7 +324,7 @@ export function Tokens() {
       </div>
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
           title="总令牌"
           value={statsLoading ? '-' : `${statistics?.total || 0}`}
@@ -333,8 +342,9 @@ export function Tokens() {
           onClick={() => setStatusFilter('active')}
         />
         <StatCard
-          title="禁用令牌"
+          title="手动禁用"
           value={statsLoading ? '-' : `${statistics?.disabled || 0}`}
+          subValue="status = 2"
           icon={XCircle}
           color="red"
           className="border-l-4 border-l-red-500"
@@ -343,10 +353,20 @@ export function Tokens() {
         <StatCard
           title="已过期"
           value={statsLoading ? '-' : `${statistics?.expired || 0}`}
+          subValue="含已过期但仍存 status=1"
           icon={Clock}
           color="yellow"
           className="border-l-4 border-l-yellow-500"
           onClick={() => setStatusFilter('expired')}
+        />
+        <StatCard
+          title="额度耗尽"
+          value={statsLoading ? '-' : `${statistics?.exhausted || 0}`}
+          subValue="非无限额度且剩余 ≤ 0"
+          icon={BatteryLow}
+          color="orange"
+          className="border-l-4 border-l-orange-500"
+          onClick={() => setStatusFilter('exhausted')}
         />
       </div>
 
@@ -403,9 +423,10 @@ export function Tokens() {
               <label className="text-xs font-medium text-muted-foreground">状态</label>
               <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
                 <option value="">全部状态</option>
-                <option value="active">启用</option>
-                <option value="disabled">禁用</option>
+                <option value="active">启用（可用）</option>
+                <option value="disabled">手动禁用</option>
                 <option value="expired">已过期</option>
+                <option value="exhausted">额度耗尽</option>
               </Select>
             </div>
             <div className="space-y-1">
@@ -722,11 +743,13 @@ export function Tokens() {
         </CardContent>
       </Card>
 
+      <TokenAuditLog refreshKey={auditRefresh} />
+
       {/* Batch Disable Dialog */}
       <TokenBatchDisableDialog
         open={batchDisableOpen}
         onOpenChange={setBatchDisableOpen}
-        onSuccess={() => { fetchTokens(); fetchStatistics() }}
+        onSuccess={() => { fetchTokens(); fetchStatistics(); setAuditRefresh(k => k + 1) }}
         onOpenToken={(tokenId, tokenName) => {
           setSelectedToken({ id: tokenId, name: tokenName })
           setTokenAnalysisOpen(true)
@@ -748,7 +771,7 @@ export function Tokens() {
             setSelectedUser({ id: userId, username })
             setAnalysisDialogOpen(true)
           }}
-          onChanged={() => { fetchTokens(); fetchStatistics() }}
+          onChanged={() => { fetchTokens(); fetchStatistics(); setAuditRefresh(k => k + 1) }}
         />
       )}
 

@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/new-api-tools/backend/internal/logger"
 	"github.com/new-api-tools/backend/internal/service"
 )
 
@@ -19,6 +21,7 @@ func RegisterTokenRoutes(r *gin.RouterGroup) {
 		g.POST("/lookup", LookupTokens)
 		g.POST("/batch-disable", BatchDisableTokens)
 		g.POST("/batch-enable", BatchEnableTokens)
+		g.GET("/audit", GetTokenAudit)
 		g.GET("/ip-stats", GetTokenIPStats)
 		g.GET("/suspected-leaks", GetSuspectedLeaks)
 		g.GET("/:id/analysis", GetTokenAnalysis)
@@ -73,6 +76,7 @@ func BatchEnableTokens(c *gin.Context) {
 
 	svc := service.NewTokenService()
 	affected, err := svc.BatchEnableTokens(req.IDs)
+	audited := recordTokenBatch(c, service.TokenAuditEnable, req.IDs, affected, err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -84,10 +88,62 @@ func BatchEnableTokens(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"requested": len(req.IDs),
-			"enabled":   affected,
+			"requested":      len(req.IDs),
+			"enabled":        affected,
+			"audit_recorded": audited,
 		},
 	})
+}
+
+// tokenAuditActor is the Tool login behind the request: the JWT subject
+// ("admin" for the password login) or "api_key".
+func tokenAuditActor(c *gin.Context) string {
+	switch c.GetString("auth_method") {
+	case "jwt":
+		if sub := c.GetString("user_sub"); sub != "" {
+			return sub
+		}
+		return "jwt"
+	case "api_key":
+		return "api_key"
+	}
+	return "unknown"
+}
+
+// recordTokenBatch appends the batch to the token audit trail. A failure to
+// record does not undo the write the gateway database already took; it is
+// logged and reported back as audit_recorded=false.
+func recordTokenBatch(c *gin.Context, action string, ids []int64, affected int64, opErr error) bool {
+	entry := service.TokenAuditEntry{
+		At:        time.Now().Unix(),
+		Actor:     tokenAuditActor(c),
+		IP:        c.ClientIP(),
+		Action:    action,
+		TokenIDs:  ids,
+		Requested: len(ids),
+		Affected:  affected,
+	}
+	if opErr != nil {
+		entry.Error = opErr.Error()
+	}
+	if err := service.RecordTokenAudit(entry); err != nil {
+		if logger.L != nil {
+			logger.L.Warn("令牌操作审计写入失败: " + err.Error())
+		}
+		return false
+	}
+	return true
+}
+
+// GET /api/tokens/audit?limit=20 — 最近的批量禁用/启用记录（新的在前）
+func GetTokenAudit(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	entries, err := service.RecentTokenAudit(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to read token audit: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": entries})
 }
 
 // GET /api/tokens/ip-stats?hours=24&ids=1,2,3 — 指定令牌窗口期去重 IP 数
@@ -188,6 +244,7 @@ func BatchDisableTokens(c *gin.Context) {
 
 	svc := service.NewTokenService()
 	affected, err := svc.BatchDisableTokens(req.IDs)
+	audited := recordTokenBatch(c, service.TokenAuditDisable, req.IDs, affected, err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -199,8 +256,9 @@ func BatchDisableTokens(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"requested": len(req.IDs),
-			"disabled":  affected,
+			"requested":      len(req.IDs),
+			"disabled":       affected,
+			"audit_recorded": audited,
 		},
 	})
 }
