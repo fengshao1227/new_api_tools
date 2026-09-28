@@ -143,10 +143,11 @@ export function ChannelMonitor() {
 
   const totals = useMemo(() => {
     const active = channels.filter(c => c.status === 1).length
-    const balance = channels.reduce((s, c) => s + (Number(c.balance) || 0), 0)
+    // 余额不合计：各上游自报、币种不一（二手上游常标 $ 实为 ¥），相加没有意义
+    const balanceReported = channels.filter(c => Number(c.balance_updated_time) > 0).length
     let reqs = 0, errs = 0
     logStats.forEach(s => { reqs += Number(s.total) || 0; errs += Number(s.errors) || 0 })
-    return { active, balance, reqs, errs, errRate: reqs > 0 ? (errs / reqs) * 100 : 0 }
+    return { active, balanceReported, reqs, errs, errRate: reqs > 0 ? (errs / reqs) * 100 : 0 }
   }, [channels, logStats])
 
   const errRateOf = (id: number) => {
@@ -169,7 +170,7 @@ export function ChannelMonitor() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">渠道监控</h2>
-          <p className="text-muted-foreground mt-1">渠道余额、性能与错误率一览（只读，不含渠道密钥）</p>
+          <p className="text-muted-foreground mt-1">渠道余额（上游自报）、性能与错误率一览（只读，不含渠道密钥）</p>
         </div>
         <div className="flex items-center gap-3">
           <Select value={String(hours)} onChange={(e) => setHours(Number(e.target.value))} className="h-9 w-28">
@@ -188,7 +189,7 @@ export function ChannelMonitor() {
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard title="渠道总数" value={`${channels.length}`} icon={Server} color="blue" className="border-l-4 border-l-blue-500" />
         <StatCard title="启用渠道" value={`${totals.active}`} icon={CheckCircle2} color="green" className="border-l-4 border-l-green-500" />
-        <StatCard title="余额合计" value={`$${totals.balance.toFixed(2)}`} icon={Wallet} color="yellow" className="border-l-4 border-l-yellow-500" />
+        <StatCard title="已上报余额" value={`${totals.balanceReported} / ${channels.length}`} subValue="逐渠道见下表，币种以上游为准，不合计" icon={Wallet} color="yellow" className="border-l-4 border-l-yellow-500" />
         <StatCard title={`窗口错误率`} value={`${totals.errRate.toFixed(2)}%`} icon={Activity} color={totals.errRate > 5 ? 'red' : 'green'} className={cn('border-l-4', totals.errRate > 5 ? 'border-l-red-500' : 'border-l-green-500')} />
       </div>
 
@@ -235,7 +236,7 @@ export function ChannelMonitor() {
                     <TableHead>状态</TableHead>
                     <TableHead>分组</TableHead>
                     <TableHead>优先级/权重</TableHead>
-                    <TableHead>余额</TableHead>
+                    <TableHead title="渠道余额由上游自报，币种以上游为准（二手上游可能标 $ 实为 ¥），不同渠道不可相加">余额（上游自报）</TableHead>
                     <TableHead>测速</TableHead>
                     <TableHead>已用额度</TableHead>
                     <TableHead>模型数</TableHead>
@@ -259,12 +260,16 @@ export function ChannelMonitor() {
                         <TableCell className="text-xs text-muted-foreground max-w-[100px] truncate" title={c.group}>{c.group || 'default'}</TableCell>
                         <TableCell className="text-xs text-muted-foreground font-mono">{c.priority} / {c.weight}</TableCell>
                         <TableCell>
-                          <div className="flex flex-col text-xs">
-                            <span className={cn('font-medium', Number(c.balance) <= 0 ? 'text-muted-foreground' : Number(c.balance) < 5 ? 'text-red-600' : 'text-green-600')}>
-                              ${Number(c.balance).toFixed(2)}
-                            </span>
-                            <span className="text-muted-foreground">{formatTs(c.balance_updated_time)}</span>
-                          </div>
+                          {Number(c.balance_updated_time) > 0 ? (
+                            <div className="flex flex-col text-xs" title="上游自报余额，币种以上游为准">
+                              <span className={cn('font-medium font-mono', Number(c.balance) <= 0 ? 'text-muted-foreground' : 'text-foreground')}>
+                                {Number(c.balance).toFixed(2)}
+                              </span>
+                              <span className="text-muted-foreground">{formatTs(c.balance_updated_time)}</span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground" title="网关尚未拉取过该渠道余额">未上报</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                           {c.response_time > 0 ? `${(c.response_time / 1000).toFixed(1)}s` : '-'}
