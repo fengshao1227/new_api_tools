@@ -8,6 +8,7 @@ import { Button } from './ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Select } from './ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
+import { cnyRateNote, formatTopUpMoney, formatUsd } from '../lib/topup-display'
 
 interface ProviderHealth {
   provider: string
@@ -17,10 +18,14 @@ interface ProviderHealth {
   pending_count: number
   failed_count: number
   expired_count: number
+  reviewing_count: number
   unknown_count: number
   success_rate: number
   failure_rate: number
   expired_rate: number
+  /** CNY / USD; empty = unknown, revenue then stays 0 */
+  currency: string
+  /** paid USD of the successful orders */
   revenue: number
   avg_completion_secs: number
   p95_completion_secs: number
@@ -46,6 +51,9 @@ interface AnomalyRecord {
   username: string | null
   amount: number
   money: number
+  payment_currency?: string | null
+  paid_usd?: number | null
+  credited_usd?: number | null
   trade_no: string
   payment_method: string
   payment_provider: string
@@ -65,9 +73,8 @@ interface AnomaliesResponse {
   items: AnomalyRecord[]
 }
 
-interface Props { active: boolean }
+interface Props { active: boolean; cnyPerUsd?: number }
 
-const fmtMoney = (n: number) => `¥${(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const fmtNum = (n: number) => (n || 0).toLocaleString()
 const fmtPct = (n: number) => `${(n || 0).toFixed(2)}%`
 const fmtTime = (ts: number) => ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
@@ -82,6 +89,7 @@ function formatDuration(secs: number) {
 function statusLabel(status: string) {
   if (status === 'success') return '成功'
   if (status === 'pending') return '待处理'
+  if (status === 'reviewing') return '审核中'
   if (status === 'failed') return '失败'
   if (status === 'expired') return '已过期'
   if (status === 'unknown') return '未知'
@@ -90,12 +98,12 @@ function statusLabel(status: string) {
 
 function statusVariant(status: string): 'success' | 'warning' | 'destructive' | 'outline' {
   if (status === 'success') return 'success'
-  if (status === 'pending') return 'warning'
+  if (status === 'pending' || status === 'reviewing') return 'warning'
   if (status === 'failed') return 'destructive'
   return 'outline'
 }
 
-export function TopUpAudit({ active }: Props) {
+export function TopUpAudit({ active, cnyPerUsd }: Props) {
   const { token } = useAuth()
   const { showToast } = useToast()
   const apiUrl = import.meta.env.VITE_API_URL || ''
@@ -199,7 +207,7 @@ export function TopUpAudit({ active }: Props) {
         <AuditMetric title="金额异常" value={(summary?.invalid_money || 0) + (summary?.invalid_amount || 0)} detail={`${fmtNum(summary?.empty_trade_no || 0)} 笔空交易号`} icon={CreditCard} tone="slate" />
       </div>
 
-      <ProviderHealthTable data={providerHealth} />
+      <ProviderHealthTable data={providerHealth} cnyPerUsd={cnyPerUsd} />
       <AnomalyTable data={anomalies?.items || []} />
     </div>
   )
@@ -239,7 +247,7 @@ function AuditMetric({
   )
 }
 
-function ProviderHealthTable({ data }: { data: ProviderHealth[] }) {
+function ProviderHealthTable({ data, cnyPerUsd }: { data: ProviderHealth[]; cnyPerUsd?: number }) {
   return (
     <Card>
       <CardHeader>
@@ -247,7 +255,7 @@ function ProviderHealthTable({ data }: { data: ProviderHealth[] }) {
           <ShieldCheck className="h-4 w-4 text-primary" />
           支付渠道健康度
         </CardTitle>
-        <CardDescription>按支付渠道和方式统计成功率、失败率、过期率与完成耗时</CardDescription>
+        <CardDescription>按支付渠道和方式统计成功率、失败率、过期率与完成耗时；收入为成功订单实付折美元（{cnyRateNote(cnyPerUsd)}），币种未知的渠道不计收入</CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         <Table>
@@ -259,7 +267,7 @@ function ProviderHealthTable({ data }: { data: ProviderHealth[] }) {
               <TableHead className="text-right">成功率</TableHead>
               <TableHead className="text-right hidden md:table-cell">失败 / 过期</TableHead>
               <TableHead className="text-right hidden lg:table-cell">平均 / P95</TableHead>
-              <TableHead className="text-right">收入</TableHead>
+              <TableHead className="text-right">收入 (美元)</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -271,7 +279,7 @@ function ProviderHealthTable({ data }: { data: ProviderHealth[] }) {
               <TableRow key={`${row.provider}-${row.method}`}>
                 <TableCell className="font-medium">{row.provider}</TableCell>
                 <TableCell><Badge variant="outline" className="font-normal">{row.method}</Badge></TableCell>
-                <TableCell className="text-right tabular-nums">{fmtNum(row.total_count)}</TableCell>
+                <TableCell className="text-right tabular-nums" title={row.reviewing_count > 0 ? `其中 ${row.reviewing_count} 笔审核中` : undefined}>{fmtNum(row.total_count)}</TableCell>
                 <TableCell className="text-right">
                   <Badge variant={row.success_rate >= 90 ? 'success' : row.success_rate >= 70 ? 'warning' : 'destructive'} className="justify-center min-w-[4rem]">
                     {fmtPct(row.success_rate)}
@@ -283,7 +291,9 @@ function ProviderHealthTable({ data }: { data: ProviderHealth[] }) {
                 <TableCell className="text-right hidden lg:table-cell text-sm text-muted-foreground">
                   {formatDuration(row.avg_completion_secs)} / {formatDuration(row.p95_completion_secs)}
                 </TableCell>
-                <TableCell className="text-right font-mono">{fmtMoney(row.revenue)}</TableCell>
+                <TableCell className="text-right font-mono" title={row.currency ? `原币种 ${row.currency}` : '币种未知，不计入收入'}>
+                  {row.currency ? formatUsd(row.revenue) : <span className="text-xs text-amber-600">币种未知</span>}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -312,7 +322,7 @@ function AnomalyTable({ data }: { data: AnomalyRecord[] }) {
               <TableHead>渠道</TableHead>
               <TableHead>状态</TableHead>
               <TableHead>异常</TableHead>
-              <TableHead className="text-right hidden md:table-cell">金额</TableHead>
+              <TableHead className="text-right hidden md:table-cell">金额（原币种）</TableHead>
               <TableHead className="text-right hidden lg:table-cell">已创建</TableHead>
               <TableHead className="text-right">创建时间</TableHead>
             </TableRow>
@@ -343,7 +353,7 @@ function AnomalyTable({ data }: { data: AnomalyRecord[] }) {
                     ))}
                   </div>
                 </TableCell>
-                <TableCell className="text-right hidden md:table-cell font-mono">{fmtMoney(row.money)}</TableCell>
+                <TableCell className="text-right hidden md:table-cell font-mono whitespace-nowrap">{formatTopUpMoney(row.money, row.payment_currency)}</TableCell>
                 <TableCell className="text-right hidden lg:table-cell text-sm text-muted-foreground">{row.age_hours.toFixed(1)} 小时</TableCell>
                 <TableCell className="text-right text-sm text-muted-foreground">{fmtTime(row.create_time)}</TableCell>
               </TableRow>

@@ -21,8 +21,9 @@ import {
   DialogTrigger,
 } from './ui/dialog'
 import { cn } from '../lib/utils'
+import { cnyRateNote, formatUsd } from '../lib/topup-display'
 
-interface Props { active: boolean }
+interface Props { active: boolean; cnyPerUsd?: number }
 
 interface RealtimeStats {
   today_money: number; today_count: number
@@ -34,21 +35,26 @@ interface RealtimeStats {
   month_money: number; month_count: number
   last_month_money: number; last_month_count: number
   month_growth: number
+  cny_per_usd?: number
 }
+// All money below is USD: CNY converted at the backend's rate, unknown
+// currencies left out, revenue dated by when it was paid.
 interface TrendPoint {
   date: string; timestamp: number
-  count: number; money: number; amount: number
+  count: number
   success_count: number; success_money: number
 }
 interface FinancialSummary {
   period: string; revenue: number; count: number
-  avg_order: number; growth_rate: number; amount: number; success_rate: number
+  avg_order: number; growth_rate: number; credited_usd: number; success_rate: number
+  unknown_currency_count: number
 }
 interface TopUser {
-  user_id: number; username: string; count: number; money: number; amount: number
+  user_id: number; username: string; count: number
+  paid_usd: number; credited_usd: number; unknown_currency_count: number
 }
 interface PaymentDist {
-  method: string; count: number; money: number; percentage: number
+  method: string; count: number; paid_usd: number; percentage: number; unknown_currency_count: number
 }
 interface HeatmapPoint {
   day_of_week: number; hour: number; count: number; money: number
@@ -80,11 +86,7 @@ interface PayerCohorts {
 type Granularity = 'daily' | 'weekly' | 'monthly'
 type TrendChartType = 'bar' | 'line'
 
-const fmtMoney = (n: number) => `¥${(n || 0).toFixed(2)}`
-const fmtExactMoney = (n: number) => `¥${(n || 0).toLocaleString('zh-CN', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})}`
+const fmtMoney = (n: number) => formatUsd(n || 0)
 const fmtNum = (n: number) => (n || 0).toLocaleString()
 const fmtPct = (n: number) => `${(n || 0).toFixed(2)}%`
 
@@ -105,7 +107,7 @@ function GrowthBadge({ value }: { value: number }) {
   )
 }
 
-export function TopUpAnalytics({ active }: Props) {
+export function TopUpAnalytics({ active, cnyPerUsd }: Props) {
   const { showToast } = useToast()
   const { token } = useAuth()
   const apiUrl = import.meta.env.VITE_API_URL || ''
@@ -235,7 +237,10 @@ export function TopUpAnalytics({ active }: Props) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">
+          金额单位：美元（{cnyRateNote(realtime?.cny_per_usd ?? cnyPerUsd)}）· 收入按支付完成时间归属，与仪表盘增长面板同一口径 · 币种未知的订单不计入金额（在「记录」页按币种筛选查看）
+        </p>
         <Button variant="outline" size="sm" onClick={handleRefreshAll} disabled={refreshing} className="h-9">
           <RefreshCw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
           刷新全部
@@ -292,7 +297,7 @@ function RealtimeBlock({ data }: { data: RealtimeStats | null }) {
           <Zap className="h-4 w-4 text-primary" />
           实时对比
         </CardTitle>
-        <CardDescription>今日 / 本周 / 本月 实收金额与同比环比（仅成功充值）</CardDescription>
+        <CardDescription>今日 / 本周 / 本月 实收金额（美元，按支付完成时间）与环比（仅成功充值）</CardDescription>
       </CardHeader>
       <CardContent>
         {!data ? (
@@ -473,10 +478,10 @@ function TrendsBlock({
               <TrendingUp className="h-4 w-4 text-primary" />
               收入趋势
             </CardTitle>
-            <CardDescription>按粒度统计成功充值金额</CardDescription>
+            <CardDescription>按粒度统计成功充值实付（美元，按支付完成时间归属）</CardDescription>
           </div>
           <div className="flex items-center gap-2 text-right">
-            <div className="text-xl font-bold text-primary tabular-nums">{fmtExactMoney(total)}</div>
+            <div className="text-xl font-bold text-primary tabular-nums">{fmtMoney(total)}</div>
             <span className="text-xs text-muted-foreground">区间合计</span>
           </div>
         </div>
@@ -629,7 +634,7 @@ function FinancialBlock({
               <CalendarDays className="h-4 w-4 text-primary" />
               月度财务汇总
             </CardTitle>
-            <CardDescription>近 N 个月成功充值收入与环比</CardDescription>
+            <CardDescription>近 N 个月成功充值收入（美元）与环比；客单价只算已确认币种的订单</CardDescription>
           </div>
           <div className="w-28">
             <Select value={months.toString()} onChange={e => onMonthsChange(parseInt(e.target.value))}>
@@ -662,7 +667,10 @@ function FinancialBlock({
                   <TableRow key={i}>
                     <TableCell className="font-medium">{row.period}</TableCell>
                     <TableCell className="text-right font-mono">{fmtMoney(row.revenue)}</TableCell>
-                    <TableCell className="text-right hidden sm:table-cell">{fmtNum(row.count)}</TableCell>
+                    <TableCell className="text-right hidden sm:table-cell" title={row.unknown_currency_count > 0 ? `其中 ${row.unknown_currency_count} 笔币种未知，未计入收入` : undefined}>
+                      {fmtNum(row.count)}
+                      {row.unknown_currency_count > 0 && <span className="ml-1 text-xs text-amber-600">({row.unknown_currency_count} 未知)</span>}
+                    </TableCell>
                     <TableCell className="text-right hidden md:table-cell">{fmtMoney(row.avg_order)}</TableCell>
                     <TableCell className="text-right">
                       {/* 最早一个月没有更早数据可比，growth_rate 一定为 0，显示 - */}
@@ -689,7 +697,7 @@ function TopUsersBlock({
   onLimitChange: (n: number) => void
   onDaysChange: (n: number) => void
 }) {
-  const max = Math.max(1, ...data.map(u => u.money || 0))
+  const max = Math.max(1, ...data.map(u => u.paid_usd || 0))
   return (
     <Card className="flex flex-col">
       <CardHeader>
@@ -699,7 +707,7 @@ function TopUsersBlock({
               <Trophy className="h-4 w-4 text-amber-500" />
               Top 充值用户
             </CardTitle>
-            <CardDescription>按成功充值金额排序</CardDescription>
+            <CardDescription>按成功充值实付（美元）排序</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-24">
@@ -727,7 +735,7 @@ function TopUsersBlock({
         ) : (
           <div className="space-y-2">
             {data.map((u, i) => {
-              const pct = (u.money / max) * 100
+              const pct = (u.paid_usd / max) * 100
               const rankColor = i === 0 ? 'bg-amber-500 text-white' : i === 1 ? 'bg-slate-400 text-white' : i === 2 ? 'bg-orange-700 text-white' : 'bg-muted text-muted-foreground'
               return (
                 <div key={u.user_id} className="flex items-center gap-3">
@@ -737,13 +745,14 @@ function TopUsersBlock({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span className="text-sm font-medium truncate" title={u.username}>{u.username || `用户${u.user_id}`}</span>
-                      <span className="text-sm font-mono font-semibold flex-shrink-0">{fmtMoney(u.money)}</span>
+                      <span className="text-sm font-mono font-semibold flex-shrink-0">{fmtMoney(u.paid_usd)}</span>
                     </div>
                     <div className="relative h-2 bg-muted rounded-full overflow-hidden">
                       <div className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
                     </div>
                     <div className="text-[10px] text-muted-foreground mt-0.5">
-                      ID {u.user_id} · {u.count} 笔 · 入账 {fmtNum(u.amount)} USD
+                      ID {u.user_id} · {u.count} 笔 · 入账 {fmtMoney(u.credited_usd)}
+                      {u.unknown_currency_count > 0 && ` · ${u.unknown_currency_count} 笔币种未知未计入`}
                     </div>
                   </div>
                 </div>
@@ -774,7 +783,7 @@ function PaymentBlock({
               <CreditCard className="h-4 w-4 text-primary" />
               支付方式分布
             </CardTitle>
-            <CardDescription>按成功充值金额占比</CardDescription>
+            <CardDescription>按成功充值实付（美元）占比</CardDescription>
           </div>
           <div className="w-28">
             <Select value={days.toString()} onChange={e => onDaysChange(parseInt(e.target.value))}>
@@ -808,8 +817,10 @@ function PaymentBlock({
                 <div key={p.method} className="flex items-center gap-2 text-sm">
                   <span className={cn("w-2.5 h-2.5 rounded-sm flex-shrink-0", palette[i % palette.length])} />
                   <span className="flex-1 truncate">{p.method || '未知'}</span>
-                  <span className="text-muted-foreground text-xs">{fmtNum(p.count)} 笔</span>
-                  <span className="font-mono w-20 text-right">{fmtMoney(p.money)}</span>
+                  <span className="text-muted-foreground text-xs" title={p.unknown_currency_count > 0 ? `其中 ${p.unknown_currency_count} 笔币种未知，未计入金额` : undefined}>
+                    {fmtNum(p.count)} 笔{p.unknown_currency_count > 0 && `（${p.unknown_currency_count} 未知）`}
+                  </span>
+                  <span className="font-mono w-24 text-right">{fmtMoney(p.paid_usd)}</span>
                   <Badge variant="outline" className="font-normal text-xs w-14 justify-center">{fmtPct(p.percentage)}</Badge>
                 </div>
               ))}
@@ -904,7 +915,8 @@ function HeatmapBlock({
                       <div className="font-medium text-foreground">统计口径</div>
                       <ul className="mt-1 list-disc space-y-1 pl-5">
                         <li>只统计成功充值，不包含待处理或失败订单。</li>
-                        <li>统计的是充值笔数，不是充值金额；金额只在悬停提示中辅助查看。</li>
+                        <li>统计的是充值笔数，不是充值金额；金额（美元）只在悬停提示中辅助查看。</li>
+                        <li>订单落在支付完成的那个小时；没有完成时间的成功单按创建时间。</li>
                         <li>右上角可切换近 7、30、60、90 天，颜色深浅会按当前范围内的最大笔数重新归一化。</li>
                         <li>时间按本地时区聚合，所以看到的是本地业务时间，而不是 UTC。</li>
                       </ul>
@@ -917,7 +929,7 @@ function HeatmapBlock({
                 </DialogContent>
               </Dialog>
             </CardTitle>
-            <CardDescription>按星期 × 小时统计成功充值笔数（本地时区）</CardDescription>
+            <CardDescription>按星期 × 小时统计成功充值笔数（按支付完成时间，本地时区）</CardDescription>
           </div>
           <div className="w-28">
             <Select value={days.toString()} onChange={e => onDaysChange(parseInt(e.target.value))}>
@@ -986,6 +998,7 @@ function FunnelBlock({
   const statusColor = (s: string) => (
     s === 'success' ? 'bg-green-500'
       : s === 'pending' ? 'bg-yellow-500'
+        : s === 'reviewing' ? 'bg-orange-500'
         : s === 'expired' ? 'bg-slate-500'
           : s === 'unknown' ? 'bg-purple-500'
             : 'bg-red-500'
@@ -993,6 +1006,7 @@ function FunnelBlock({
   const statusLabel = (s: string) => (
     s === 'success' ? '成功'
       : s === 'pending' ? '待处理'
+        : s === 'reviewing' ? '审核中'
         : s === 'expired' ? '已过期'
           : s === 'unknown' ? '未知'
             : '失败'
@@ -1008,7 +1022,7 @@ function FunnelBlock({
               <Filter className="h-4 w-4 text-primary" />
               转化漏斗
             </CardTitle>
-            <CardDescription>状态分布与按支付方式的成功率</CardDescription>
+            <CardDescription>状态分布（金额为美元）与按支付方式的成功率</CardDescription>
           </div>
           <div className="w-28">
             <Select value={days.toString()} onChange={e => onDaysChange(parseInt(e.target.value))}>

@@ -13,7 +13,7 @@ import { StatCard } from './StatCard'
 import { TopUpAnalytics } from './TopUpAnalytics'
 import { TopUpAudit } from './TopUpAudit'
 import { cn } from '../lib/utils'
-import { formatTopUpAmount, formatTopUpMoney } from '../lib/topup-display'
+import { cnyRateNote, formatTopUpMoney, formatUsd } from '../lib/topup-display'
 
 interface TopUpRecord {
   id: number
@@ -21,9 +21,14 @@ interface TopUpRecord {
   username: string | null
   user_email?: string | null
   amount: number
-  amount_usd?: number | null
   money: number
+  /** CNY / USD; empty = currency unknown (kept out of every USD total) */
   payment_currency?: string | null
+  /** paid amount converted to USD; null when the currency is unknown */
+  paid_usd?: number | null
+  /** quota credited, in USD */
+  credited_usd?: number | null
+  is_subscription?: boolean
   trade_no: string
   payment_method: string
   payment_provider: string
@@ -37,28 +42,24 @@ interface TopUpRecord {
 
 interface TopUpStatistics {
   total_count: number
-  total_amount: number
-  total_money: number
   success_count: number
-  success_amount: number
-  success_money: number
   pending_count: number
-  pending_amount: number
-  pending_money: number
+  reviewing_count: number
   failed_count: number
-  failed_amount: number
-  failed_money: number
   expired_count: number
-  expired_amount: number
-  expired_money: number
   unknown_count: number
-  unknown_amount: number
-  unknown_money: number
-  success_amount_usd?: number | null
-  success_money_usd?: number | null
-  pending_money_usd?: number | null
-  failed_money_usd?: number | null
-  expired_money_usd?: number | null
+  success_money_usd: number
+  pending_money_usd: number
+  reviewing_money_usd: number
+  failed_money_usd: number
+  expired_money_usd: number
+  success_amount_usd: number
+  success_cny_money: number
+  success_usd_money: number
+  unknown_currency_count: number
+  success_unknown_currency_count: number
+  success_unknown_currency_money: number
+  cny_per_usd: number
 }
 
 interface PaginatedResponse {
@@ -69,7 +70,8 @@ interface PaginatedResponse {
   total_pages: number
 }
 
-type StatusFilter = '' | 'pending' | 'success' | 'failed' | 'expired' | 'unknown'
+type StatusFilter = '' | 'pending' | 'reviewing' | 'success' | 'failed' | 'expired' | 'unknown'
+type CurrencyFilter = '' | 'CNY' | 'USD' | 'unknown'
 
 /** 纯数字 → user_id 精确查；否则 → username 模糊查 */
 function appendUserSearchParam(params: URLSearchParams, query: string) {
@@ -94,22 +96,26 @@ interface UserQuotaIncomeSummary {
   user_id: number
   username: string
   paid_count: number
-  paid_money: number
-  paid_money_usd?: number | null
+  paid_money_usd: number
+  paid_cny_money: number
+  paid_usd_money: number
+  paid_unknown_currency_count: number
+  paid_unknown_currency_money: number
   paid_amount: number
   unsuccess_count: number
-  unsuccess_money: number
-  unsuccess_money_usd?: number | null
+  unsuccess_money_usd: number
   redemption_count: number
   redemption_quota_raw: number
   redemption_quota_usd: number
   net_paid_amount_usd: number
   total_income_usd: number
+  cny_per_usd: number
 }
 
 function getStatusLabel(status: string) {
   if (status === 'success') return '成功'
   if (status === 'pending') return '待处理'
+  if (status === 'reviewing') return '审核中'
   if (status === 'failed') return '失败'
   if (status === 'expired') return '已过期'
   if (status === 'unknown') return '未知'
@@ -118,7 +124,7 @@ function getStatusLabel(status: string) {
 
 function getStatusVariant(status: string): 'success' | 'warning' | 'destructive' | 'outline' {
   if (status === 'success') return 'success'
-  if (status === 'pending') return 'warning'
+  if (status === 'pending' || status === 'reviewing') return 'warning'
   if (status === 'failed') return 'destructive'
   return 'outline'
 }
@@ -139,6 +145,7 @@ export function TopUps() {
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('')
+  const [currencyFilter, setCurrencyFilter] = useState<CurrencyFilter>('')
   const [paymentMethodFilter, setPaymentMethodFilter] = useState('')
   const [paymentProviderFilter, setPaymentProviderFilter] = useState('')
   const [tradeNoSearch, setTradeNoSearch] = useState('')
@@ -219,6 +226,7 @@ export function TopUps() {
     try {
       const params = new URLSearchParams({ page: page.toString(), page_size: pageSize.toString() })
       if (statusFilter) params.append('status', statusFilter)
+      if (currencyFilter) params.append('currency', currencyFilter)
       if (paymentMethodFilter) params.append('payment_method', paymentMethodFilter)
       if (paymentProviderFilter) params.append('payment_provider', paymentProviderFilter)
       if (tradeNoSearch) params.append('trade_no', tradeNoSearch)
@@ -238,12 +246,12 @@ export function TopUps() {
       showToast('error', '网络错误，请重试')
       console.error('Failed to fetch records:', error)
     } finally { setLoading(false) }
-  }, [apiUrl, getAuthHeaders, page, pageSize, statusFilter, paymentMethodFilter, paymentProviderFilter, tradeNoSearch, usernameSearch, startDate, endDate, showToast])
+  }, [apiUrl, getAuthHeaders, page, pageSize, statusFilter, currencyFilter, paymentMethodFilter, paymentProviderFilter, tradeNoSearch, usernameSearch, startDate, endDate, showToast])
 
   useEffect(() => { fetchRecords() }, [fetchRecords])
   useEffect(() => { fetchStatistics() }, [fetchStatistics])
   useEffect(() => { fetchUserIncome() }, [fetchUserIncome])
-  useEffect(() => { setPage(1) }, [statusFilter, paymentMethodFilter, paymentProviderFilter, tradeNoSearch, usernameSearch, startDate, endDate])
+  useEffect(() => { setPage(1) }, [statusFilter, currencyFilter, paymentMethodFilter, paymentProviderFilter, tradeNoSearch, usernameSearch, startDate, endDate])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -260,6 +268,7 @@ export function TopUps() {
     try {
       const params = new URLSearchParams()
       if (statusFilter) params.append('status', statusFilter)
+      if (currencyFilter) params.append('currency', currencyFilter)
       if (paymentMethodFilter) params.append('payment_method', paymentMethodFilter)
       if (paymentProviderFilter) params.append('payment_provider', paymentProviderFilter)
       if (tradeNoSearch) params.append('trade_no', tradeNoSearch)
@@ -314,8 +323,8 @@ export function TopUps() {
   }
 
   const formatTimestamp = (ts: number) => ts ? new Date(ts * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
-  const formatAmount = formatTopUpAmount
-  const formatMoney = (money?: number | null) => formatTopUpMoney(money, 'USD')
+  const formatMoney = formatUsd
+  const rateNote = cnyRateNote(statistics?.cny_per_usd)
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -324,7 +333,7 @@ export function TopUps() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">充值记录</h2>
           <p className="text-muted-foreground mt-1">
-            实付金额按支付币种显示 · 获得额度与汇总统一为 USD
+            逐单显示原币种金额 · 汇总与入账额度统一为美元（{rateNote}）
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -422,14 +431,35 @@ export function TopUps() {
                 <span className="text-muted-foreground">成功充值:</span>
                 <span className="font-semibold">{statsLoading ? '-' : statistics?.success_count || 0} 笔</span>
               </div>
-              <div className="flex items-center gap-2" title="成功充值的已确认币种金额，按配置汇率折算 USD；未确认币种不计入">
-                <span className="text-muted-foreground">实付合计（折合）:</span>
+              <div
+                className="flex items-center gap-2"
+                title={statistics ? `原币：¥${(statistics.success_cny_money || 0).toFixed(2)} CNY + $${(statistics.success_usd_money || 0).toFixed(2)} USD` : undefined}
+              >
+                <span className="text-muted-foreground">实付合计（折美元）:</span>
                 <span className="font-semibold text-primary">{statsLoading ? '-' : formatMoney(statistics?.success_money_usd)}</span>
               </div>
-              <div className="flex items-center gap-2" title="成功充值后用户获得的额度合计">
-                 <span className="text-muted-foreground">获得额度:</span>
-                 <span className="font-semibold text-green-600">{statsLoading ? '-' : formatMoney(statistics?.success_amount_usd)}</span>
+              <div className="flex items-center gap-2" title="成功充值后入账的额度，统一换算为美元">
+                <span className="text-muted-foreground">入账额度:</span>
+                <span className="font-semibold text-green-600">{statsLoading ? '-' : formatMoney(statistics?.success_amount_usd)}</span>
               </div>
+              {(statistics?.reviewing_count || 0) > 0 && (
+                <div className="flex items-center gap-2" title="Stripe 风控审核中：已收款、未入账">
+                  <span className="text-muted-foreground">审核中:</span>
+                  <button className="font-semibold text-amber-600 hover:underline" onClick={() => setStatusFilter('reviewing')}>
+                    {statistics?.reviewing_count || 0} 笔 · {formatMoney(statistics?.reviewing_money_usd)}
+                  </button>
+                </div>
+              )}
+              {(statistics?.unknown_currency_count || 0) > 0 && (
+                <div className="flex items-center gap-2" title="支付渠道无法判定币种的订单：单独列出，不计入任何美元合计">
+                  <span className="text-muted-foreground">币种未知:</span>
+                  <button className="font-semibold text-amber-600 hover:underline" onClick={() => setCurrencyFilter('unknown')}>
+                    {statistics?.unknown_currency_count || 0} 笔
+                    {(statistics?.success_unknown_currency_count || 0) > 0 &&
+                      `（成功 ${statistics?.success_unknown_currency_count} 笔，原币 ${(statistics?.success_unknown_currency_money || 0).toFixed(2)}，不计入合计）`}
+                  </button>
+                </div>
+              )}
               {(statistics?.unknown_count || 0) > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">未知状态:</span>
@@ -440,7 +470,7 @@ export function TopUps() {
               )}
             </CardContent>
           </Card>
-          <p className="text-xs text-muted-foreground">金额汇总仅包含已确认币种的订单，人民币按配置汇率折算为 USD。</p>
+          <p className="text-xs text-muted-foreground">金额合计为美元，{rateNote}；币种未知的订单不计入合计。卡片按订单创建日期筛选，与下方列表一致。</p>
 
           {/* 单用户：实付 vs 兑换码统计（输入用户 ID 后显示） */}
           {exactUserId != null && (
@@ -483,11 +513,18 @@ export function TopUps() {
                       <div className="text-xs text-muted-foreground">在线充值成功单</div>
                     </div>
                     <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1">
-                      <div className="text-xs text-muted-foreground">实付金额（折合 USD）</div>
+                      <div className="text-xs text-muted-foreground">实付金额（折美元）</div>
                       <div className="font-semibold text-lg text-primary">
                         {formatMoney(userIncome.paid_money_usd)}
                       </div>
-                      <div className="text-xs text-muted-foreground">用户实际支付合计</div>
+                      <div className="text-xs text-muted-foreground">
+                        原币 ¥{(userIncome.paid_cny_money || 0).toFixed(2)} + ${(userIncome.paid_usd_money || 0).toFixed(2)} · {cnyRateNote(userIncome.cny_per_usd)}
+                      </div>
+                      {(userIncome.paid_unknown_currency_count || 0) > 0 && (
+                        <div className="text-xs text-amber-600">
+                          另有 {userIncome.paid_unknown_currency_count} 笔币种未知（原币 {(userIncome.paid_unknown_currency_money || 0).toFixed(2)}），不计入
+                        </div>
+                      )}
                     </div>
                     <div className="rounded-lg border border-amber-200 bg-amber-50/80 dark:bg-amber-950/20 dark:border-amber-900 p-3 space-y-1">
                       <div className="text-xs text-muted-foreground">未成功充值</div>
@@ -497,20 +534,20 @@ export function TopUps() {
                       <div className="text-muted-foreground">
                         金额 {formatMoney(userIncome.unsuccess_money_usd)}
                       </div>
-                      <div className="text-xs text-muted-foreground">待处理 + 已过期</div>
+                      <div className="text-xs text-muted-foreground">待处理 + 审核中 + 已过期（折美元）</div>
                     </div>
                     <div className="rounded-lg border bg-background/80 p-3 space-y-1">
                       <div className="text-xs text-muted-foreground">兑换码使用</div>
                       <div className="font-semibold text-lg text-amber-600">{userIncome.redemption_count} 次</div>
                       <div className="text-muted-foreground">
-                        获得额度 {formatAmount(userIncome.redemption_quota_usd)} USD
+                        获得额度 {formatMoney(userIncome.redemption_quota_usd)}
                         <span className="text-xs ml-1">（不计入实付）</span>
                       </div>
                     </div>
                     <div className="rounded-lg border border-green-200 bg-green-50/80 dark:bg-green-950/20 dark:border-green-900 p-3 space-y-1">
                       <div className="text-xs text-muted-foreground">在线充值获得额度</div>
                       <div className="font-semibold text-lg text-green-700 dark:text-green-400">
-                        {formatAmount(userIncome.net_paid_amount_usd)} USD
+                        {formatMoney(userIncome.net_paid_amount_usd)}
                       </div>
                       <div className="text-xs text-muted-foreground">
                         仅在线充值成功单 · 不含兑换码
@@ -518,7 +555,7 @@ export function TopUps() {
                     </div>
                     <div className="rounded-lg border bg-background/80 p-3 space-y-1">
                       <div className="text-xs text-muted-foreground">总入账额度（含兑换）</div>
-                      <div className="font-semibold text-lg">{formatAmount(userIncome.total_income_usd)} USD</div>
+                      <div className="font-semibold text-lg">{formatMoney(userIncome.total_income_usd)}</div>
                       <div className="text-xs text-muted-foreground">在线充值额度 + 兑换码额度</div>
                     </div>
                   </div>
@@ -545,9 +582,19 @@ export function TopUps() {
                     <option value="">全部状态</option>
                     <option value="success">成功</option>
                     <option value="pending">待处理</option>
+                    <option value="reviewing">审核中</option>
                     <option value="failed">失败</option>
                     <option value="expired">已过期</option>
                     <option value="unknown">未知</option>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">原币种</label>
+                  <Select value={currencyFilter} onChange={(e) => setCurrencyFilter(e.target.value as CurrencyFilter)}>
+                    <option value="">全部币种</option>
+                    <option value="CNY">人民币 CNY</option>
+                    <option value="USD">美元 USD</option>
+                    <option value="unknown">币种未知</option>
                   </Select>
                 </div>
                 <div className="space-y-1">
@@ -614,7 +661,7 @@ export function TopUps() {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                <Button variant="ghost" size="sm" onClick={() => { setStatusFilter(''); setPaymentMethodFilter(''); setPaymentProviderFilter(''); setTradeNoSearch(''); setUsernameSearch(''); setStartDate(''); setEndDate('') }} className="text-muted-foreground hover:text-foreground">
+                <Button variant="ghost" size="sm" onClick={() => { setStatusFilter(''); setCurrencyFilter(''); setPaymentMethodFilter(''); setPaymentProviderFilter(''); setTradeNoSearch(''); setUsernameSearch(''); setStartDate(''); setEndDate('') }} className="text-muted-foreground hover:text-foreground">
                   重置筛选
                 </Button>
               </div>
@@ -647,7 +694,7 @@ export function TopUps() {
                         <TableHead>用户</TableHead>
                         <TableHead>邮箱</TableHead>
                         <TableHead title="按订单支付币种显示；成功订单为实付金额，待处理订单为应付金额">支付金额（原币种）</TableHead>
-                        <TableHead title="充值额度统一换算为 USD，成功后入账">获得额度 (USD)</TableHead>
+                        <TableHead title="入账额度统一换算为美元，成功后入账">入账额度 (美元)</TableHead>
                         <TableHead>交易号</TableHead>
                         <TableHead>支付渠道</TableHead>
                         <TableHead>状态</TableHead>
@@ -678,10 +725,18 @@ export function TopUps() {
                             </span>
                           </TableCell>
                           <TableCell className="font-medium text-primary whitespace-nowrap" title="成功订单为实付金额；待处理订单为应付金额">
-                            {formatTopUpMoney(record.money, record.payment_currency)}
+                            <div className="flex flex-col">
+                              <span>{formatTopUpMoney(record.money, record.payment_currency)}</span>
+                              {record.payment_currency === 'CNY' && (
+                                <span className="text-xs font-normal text-muted-foreground">≈ {formatMoney(record.paid_usd)}</span>
+                              )}
+                            </div>
                           </TableCell>
-                          <TableCell className="font-medium text-green-600" title="用户获得额度">
-                            {formatAmount(record.amount_usd)}
+                          <TableCell className="font-medium text-green-600" title="入账额度（美元）">
+                            <div className="flex flex-col">
+                              <span>{formatMoney(record.credited_usd)}</span>
+                              {record.is_subscription && <span className="text-xs font-normal text-muted-foreground">订阅套餐</span>}
+                            </div>
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1 max-w-[200px]">
@@ -777,11 +832,11 @@ export function TopUps() {
 
         {/* 分析 tab：首次进入时挂载并 fetch；后续切换由 forceMount 保活避免重 fetch。 */}
         <TabsContent value="analytics" forceMount className="data-[state=inactive]:hidden mt-6">
-          <TopUpAnalytics active={activeTab === 'analytics'} />
+          <TopUpAnalytics active={activeTab === 'analytics'} cnyPerUsd={statistics?.cny_per_usd} />
         </TabsContent>
 
         <TabsContent value="audit" forceMount className="data-[state=inactive]:hidden mt-6">
-          <TopUpAudit active={activeTab === 'audit'} />
+          <TopUpAudit active={activeTab === 'audit'} cnyPerUsd={statistics?.cny_per_usd} />
         </TabsContent>
       </Tabs>
     </div>

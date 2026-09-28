@@ -29,6 +29,7 @@ import { StatCard } from './StatCard'
 import { useToast } from './Toast'
 import { useAuth } from '../contexts/AuthContext'
 import { cn } from '../lib/utils'
+import { cnyRateNote, formatTopUpMoney, formatUsd } from '../lib/topup-display'
 
 interface AffiliateRow {
   inviter_id: number
@@ -37,8 +38,9 @@ interface AffiliateRow {
   aff_count: number
   invitee_count: number
   success_topup_count: number
-  success_amount: number
-  success_money: number
+  success_credited_usd: number
+  success_paid_usd: number
+  unknown_currency_count: number
   last_topup_at: number | null
 }
 
@@ -46,8 +48,10 @@ interface AffiliateSummary {
   total_inviters: number
   total_invitees: number
   total_topup_count: number
-  total_amount: number
-  total_money: number
+  total_credited_usd: number
+  total_paid_usd: number
+  total_unknown_currency_count: number
+  cny_per_usd: number
 }
 
 interface PaginatedResponse {
@@ -62,31 +66,31 @@ interface TopUpDetailRow {
   id: number
   user_id: number
   username: string | null
-  amount: number
   money: number
+  payment_currency?: string | null
+  credited_usd?: number | null
   complete_time: number
   status: string
 }
 
 type SortBy =
-  | 'success_money'
-  | 'success_amount'
+  | 'success_paid_usd'
+  | 'success_credited_usd'
   | 'success_topup_count'
   | 'invitee_count'
   | 'last_topup_at'
   | 'aff_count'
 
 const SORTABLE: Record<SortBy, string> = {
-  success_money: '累计金额',
-  success_amount: '累计额度',
+  success_paid_usd: '累计实付',
+  success_credited_usd: '累计入账',
   success_topup_count: '充值笔数',
   invitee_count: '充值人数',
   last_topup_at: '最近充值',
   aff_count: '邀请数',
 }
 
-const formatMoney = (n: number) => `¥${(n || 0).toFixed(2)}`
-const formatAmount = (n: number) => (n || 0).toLocaleString()
+const formatMoney = (n: number | null | undefined) => formatUsd(n || 0)
 const formatTime = (ts: number | null | undefined) =>
   ts ? new Date(ts * 1000).toLocaleString('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',
@@ -112,7 +116,7 @@ export function AffiliateStats() {
   const [searchInput, setSearchInput] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
-  const [sortBy, setSortBy] = useState<SortBy>('success_money')
+  const [sortBy, setSortBy] = useState<SortBy>('success_paid_usd')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   const [expandedId, setExpandedId] = useState<number | null>(null)
@@ -240,7 +244,7 @@ export function AffiliateStats() {
         <div>
           <h3 className="text-xl font-bold tracking-tight">邀请返利统计</h3>
           <p className="text-muted-foreground text-sm mt-1">
-            按邀请人聚合被邀请用户的成功充值金额，用于核算返利与排查异常
+            按邀请人聚合被邀请用户的成功充值（美元，按支付完成时间归属），用于核算返利与排查异常
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -276,15 +280,16 @@ export function AffiliateStats() {
         />
         <StatCard
           title="累计入账额度"
-          value={summaryLoading ? '-' : `${formatAmount(summary?.total_amount || 0)}`}
-          subValue="USD quota"
+          value={summaryLoading ? '-' : formatMoney(summary?.total_credited_usd)}
+          subValue="入账额度（美元）"
           icon={CircleDollarSign}
           color="amber"
           className="border-l-4 border-l-amber-500"
         />
         <StatCard
           title="累计实付金额"
-          value={summaryLoading ? '-' : formatMoney(summary?.total_money || 0)}
+          value={summaryLoading ? '-' : formatMoney(summary?.total_paid_usd)}
+          subValue={summaryLoading ? undefined : `折美元，${cnyRateNote(summary?.cny_per_usd)}${(summary?.total_unknown_currency_count || 0) > 0 ? `；${summary?.total_unknown_currency_count} 笔币种未知未计入` : ''}`}
           icon={Wallet}
           color="rose"
           className="border-l-4 border-l-rose-500"
@@ -381,11 +386,11 @@ export function AffiliateStats() {
                     <TableHead className="text-right cursor-pointer select-none" onClick={() => toggleSort('success_topup_count')}>
                       充值笔数{sortIndicator('success_topup_count')}
                     </TableHead>
-                    <TableHead className="text-right cursor-pointer select-none" onClick={() => toggleSort('success_amount')}>
-                      累计额度{sortIndicator('success_amount')}
+                    <TableHead className="text-right cursor-pointer select-none" onClick={() => toggleSort('success_credited_usd')}>
+                      累计入账 (美元){sortIndicator('success_credited_usd')}
                     </TableHead>
-                    <TableHead className="text-right cursor-pointer select-none" onClick={() => toggleSort('success_money')}>
-                      累计金额{sortIndicator('success_money')}
+                    <TableHead className="text-right cursor-pointer select-none" onClick={() => toggleSort('success_paid_usd')}>
+                      累计实付 (美元){sortIndicator('success_paid_usd')}
                     </TableHead>
                     <TableHead className="cursor-pointer select-none" onClick={() => toggleSort('last_topup_at')}>
                       最近充值{sortIndicator('last_topup_at')}
@@ -419,8 +424,11 @@ export function AffiliateStats() {
                         </TableCell>
                         <TableCell className="text-right">{row.invitee_count}</TableCell>
                         <TableCell className="text-right">{row.success_topup_count}</TableCell>
-                        <TableCell className="text-right">{formatAmount(row.success_amount)}</TableCell>
-                        <TableCell className="text-right font-semibold text-primary">{formatMoney(row.success_money)}</TableCell>
+                        <TableCell className="text-right">{formatMoney(row.success_credited_usd)}</TableCell>
+                        <TableCell className="text-right font-semibold text-primary" title={row.unknown_currency_count > 0 ? `${row.unknown_currency_count} 笔币种未知，未计入` : undefined}>
+                          {formatMoney(row.success_paid_usd)}
+                          {row.unknown_currency_count > 0 && <span className="ml-1 text-xs font-normal text-amber-600">+{row.unknown_currency_count} 笔未知</span>}
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{formatTime(row.last_topup_at)}</TableCell>
                       </TableRow>
                     )
@@ -445,8 +453,8 @@ export function AffiliateStats() {
                                   <TableRow>
                                     <TableHead>充值 ID</TableHead>
                                     <TableHead>被邀请人</TableHead>
-                                    <TableHead className="text-right">额度</TableHead>
-                                    <TableHead className="text-right">金额</TableHead>
+                                    <TableHead className="text-right">入账 (美元)</TableHead>
+                                    <TableHead className="text-right">金额（原币种）</TableHead>
                                     <TableHead>完成时间</TableHead>
                                   </TableRow>
                                 </TableHeader>
@@ -458,8 +466,8 @@ export function AffiliateStats() {
                                         {d.username || `#${d.user_id}`}
                                         <span className="text-[10px] text-muted-foreground ml-2">ID:{d.user_id}</span>
                                       </TableCell>
-                                      <TableCell className="text-right">{formatAmount(d.amount)}</TableCell>
-                                      <TableCell className="text-right font-medium">{formatMoney(d.money)}</TableCell>
+                                      <TableCell className="text-right">{formatMoney(d.credited_usd)}</TableCell>
+                                      <TableCell className="text-right font-medium whitespace-nowrap">{formatTopUpMoney(d.money, d.payment_currency)}</TableCell>
                                       <TableCell className="text-xs text-muted-foreground">{formatTime(d.complete_time)}</TableCell>
                                     </TableRow>
                                   ))}
