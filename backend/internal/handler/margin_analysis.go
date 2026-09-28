@@ -59,10 +59,18 @@ func GetMarginAnalysis(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
-// GET /api/margin-analysis/pricing
+// GET /api/margin-analysis/pricing?refresh=true
+//
+// A failed refresh with an earlier good result answers 200 with that result
+// marked stale. Only a failure with nothing to fall back on is an error: 504
+// when the gateway ran out of time, 502 when it refused or was unreachable.
 func GetMarginPricingAnalysis(c *gin.Context) {
-	data, err := service.GetPricingAnalysis()
+	data, err := service.GetPricingAnalysis(c.Query("refresh") == "true")
 	if err != nil {
+		if service.IsPricingTimeout(err) {
+			c.JSON(http.StatusGatewayTimeout, models.ErrorResp("PRICING_SOURCE_TIMEOUT", err.Error(), ""))
+			return
+		}
 		c.JSON(http.StatusBadGateway, models.ErrorResp("PRICING_SOURCE_ERROR", err.Error(), ""))
 		return
 	}

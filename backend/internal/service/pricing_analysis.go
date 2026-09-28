@@ -12,30 +12,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/new-api-tools/backend/internal/cache"
 	"github.com/new-api-tools/backend/internal/database"
 	"github.com/new-api-tools/backend/internal/util"
 )
 
-const pricingAnalysisTimeout = 90 * time.Second
+// Gateway budgets for the cost-baseline page. The whole build must finish
+// well inside the HTTP server's WriteTimeout (60 s, cmd/server/main.go): a
+// handler that outlives it has its response dropped, and the browser gets a
+// bare 502 from nginx instead of an error it can read. Variables so tests can
+// shrink them.
+var (
+	pricingRequestTimeout = 20 * time.Second // one gateway call
+	pricingBuildBudget    = 45 * time.Second // every call of one build together
+)
 
 type PricingScenario struct {
-	ModelName            string         `json:"model_name"`
-	Tier                 string         `json:"tier"`
-	ConditionHint        string         `json:"condition_hint,omitempty"`
-	RetailUSD            float64        `json:"retail_usd"`
-	LowestCostUSD        float64        `json:"lowest_cost_usd"`
-	HighestCostUSD       float64        `json:"highest_cost_usd"`
-	HighestMarginPercent float64        `json:"highest_margin_percent"`
-	LowestMarginPercent  float64        `json:"lowest_margin_percent"`
-	LowestCostChannel    string         `json:"lowest_cost_channel,omitempty"`
-	HighestCostChannel   string         `json:"highest_cost_channel,omitempty"`
-	CostRoutes           int            `json:"cost_routes"`
-	UnpricedRoutes       int            `json:"unpriced_routes"`
-	ServedRoutes         int            `json:"served_routes"`
-	UnservedRoutes       int            `json:"unserved_routes"`
-	Status               string         `json:"status"`
-	Routes               []PricingRoute `json:"routes"`
+	ModelName     string `json:"model_name"`
+	Tier          string `json:"tier"`
+	ConditionHint string `json:"condition_hint,omitempty"`
+	// ListUSD is the gateway's list price (price-book, before any group
+	// ratio). RetailUSD is what a customer in Group actually pays:
+	// ListUSD × GroupRatio. Every margin on this scenario uses RetailUSD.
+	ListUSD    float64 `json:"list_usd"`
+	Group      string  `json:"group,omitempty"`
+	GroupRatio float64 `json:"group_ratio"`
+	// OtherGroups are the model's other selling groups whose ratio differs
+	// from Group's, each with its own retail price and margin range.
+	OtherGroups          []PricingGroupPrice `json:"other_groups,omitempty"`
+	RetailUSD            float64             `json:"retail_usd"`
+	LowestCostUSD        float64             `json:"lowest_cost_usd"`
+	HighestCostUSD       float64             `json:"highest_cost_usd"`
+	HighestMarginPercent float64             `json:"highest_margin_percent"`
+	LowestMarginPercent  float64             `json:"lowest_margin_percent"`
+	LowestCostChannel    string              `json:"lowest_cost_channel,omitempty"`
+	HighestCostChannel   string              `json:"highest_cost_channel,omitempty"`
+	CostRoutes           int                 `json:"cost_routes"`
+	UnpricedRoutes       int                 `json:"unpriced_routes"`
+	ServedRoutes         int                 `json:"served_routes"`
+	UnservedRoutes       int                 `json:"unserved_routes"`
+	Status               string              `json:"status"`
+	Routes               []PricingRoute      `json:"routes"`
 }
 
 type PricingRoute struct {
@@ -53,17 +69,20 @@ type PricingRoute struct {
 }
 
 type PricingModelAnalysis struct {
-	ModelName               string            `json:"model_name"`
-	Mode                    string            `json:"mode"`
-	Expression              string            `json:"expression,omitempty"`
-	PromptUSDPerMillion     float64           `json:"prompt_usd_per_million,omitempty"`
-	CompletionUSDPerMillion float64           `json:"completion_usd_per_million,omitempty"`
-	Scenarios               []PricingScenario `json:"scenarios"`
-	BestMarginPercent       float64           `json:"best_margin_percent"`
-	WorstMarginPercent      float64           `json:"worst_margin_percent"`
-	BestScenario            string            `json:"best_scenario,omitempty"`
-	WorstScenario           string            `json:"worst_scenario,omitempty"`
-	Unpriced                bool              `json:"unpriced"`
+	ModelName  string `json:"model_name"`
+	Mode       string `json:"mode"`
+	Expression string `json:"expression,omitempty"`
+	// Token rates are list prices, before the group ratio.
+	PromptUSDPerMillion     float64 `json:"prompt_usd_per_million,omitempty"`
+	CompletionUSDPerMillion float64 `json:"completion_usd_per_million,omitempty"`
+	// SellGroups are the groups the model is routed in, primary first.
+	SellGroups         []PricingSellGroup `json:"sell_groups"`
+	Scenarios          []PricingScenario  `json:"scenarios"`
+	BestMarginPercent  float64            `json:"best_margin_percent"`
+	WorstMarginPercent float64            `json:"worst_margin_percent"`
+	BestScenario       string             `json:"best_scenario,omitempty"`
+	WorstScenario      string             `json:"worst_scenario,omitempty"`
+	Unpriced           bool               `json:"unpriced"`
 }
 
 type PricingAnalysisResult struct {
@@ -73,6 +92,12 @@ type PricingAnalysisResult struct {
 	Best         []PricingScenario      `json:"best"`
 	Worst        []PricingScenario      `json:"worst"`
 	Notes        []string               `json:"notes"`
+	// GeneratedAt is when the gateway was read (unix seconds).
+	GeneratedAt int64 `json:"generated_at"`
+	// Stale is set when this refresh failed and the last good result is
+	// served instead; StaleReason is the refresh's error.
+	Stale       bool   `json:"stale,omitempty"`
+	StaleReason string `json:"stale_reason,omitempty"`
 }
 
 type pricingProbe struct {
@@ -142,7 +167,7 @@ func newPricingHTTPClient() (*pricingHTTPClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w，无法读取 new-api 的定价解析结果", err)
 	}
-	return &pricingHTTPClient{gateway: gateway, client: &http.Client{Timeout: pricingAnalysisTimeout}}, nil
+	return &pricingHTTPClient{gateway: gateway, client: &http.Client{Timeout: pricingRequestTimeout}}, nil
 }
 
 func (c *pricingHTTPClient) getJSON(ctx context.Context, path string, query url.Values, target interface{}) error {
@@ -170,24 +195,33 @@ func (c *pricingHTTPClient) getJSON(ctx context.Context, path string, query url.
 	return nil
 }
 
-// GetPricingAnalysis uses new-api's own price/cost evaluators as the source of
-// truth, then turns every served route into a margin range. This keeps the
-// plugin from maintaining a second expression interpreter while still making
-// the operator-facing report independent from the new-api dashboard UI.
-func GetPricingAnalysis() (*PricingAnalysisResult, error) {
-	cm := cache.Get()
-	const cacheKey = "margin-analysis:pricing"
-	var cached PricingAnalysisResult
-	if found, _ := cm.GetJSON(cacheKey, &cached); found {
-		return &cached, nil
-	}
+// buildPricingAnalysisFromGateway uses new-api's own price/cost evaluators as
+// the source of truth, then turns every served route into a margin range. This
+// keeps the plugin from maintaining a second expression interpreter while
+// still making the operator-facing report independent from the new-api
+// dashboard UI. GetPricingAnalysis (pricing_cache.go) caches it.
+func buildPricingAnalysisFromGateway() (*PricingAnalysisResult, error) {
 	client, err := newPricingHTTPClient()
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pricingAnalysisTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), pricingBuildBudget)
 	defer cancel()
+	groups, groupErr := loadPricingGroupConfig(database.Get())
+	result, err := buildPricingAnalysisWith(ctx, client, groups)
+	if err != nil {
+		if IsPricingTimeout(err) {
+			return nil, fmt.Errorf("new-api 定价接口 %s 内没有全部返回，已放弃（单次请求上限 %s）: %w", pricingBuildBudget, pricingRequestTimeout, err)
+		}
+		return nil, err
+	}
+	if groupErr != nil {
+		result.Notes = append(result.Notes, "读取分组倍率失败，本次零售价按牌价计算，毛利偏高："+groupErr.Error())
+	}
+	return result, nil
+}
 
+func buildPricingAnalysisWith(ctx context.Context, client *pricingHTTPClient, groups pricingGroupConfig) (*PricingAnalysisResult, error) {
 	probe := url.Values{}
 	probe.Set("tokens", "p:1000000,c:1000000,len:1000000,cr:0,cc:0")
 	probe.Set("usage", "duration:1,seconds:1,n:1,credits:1")
@@ -219,7 +253,7 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 	if quotaPerUnit <= 0 {
 		quotaPerUnit = util.TokensPerUSD
 	}
-	result := combinePricingAnalysis(costEnvelope.Data.Rows, priceRows, quotaPerUnit, "", false)
+	result := combinePricingAnalysis(costEnvelope.Data.Rows, priceRows, quotaPerUnit, "", false, groups)
 	// Token expressions need separate input/output/cache scenarios. Probing p
 	// and c together produces misleading values such as $12,000,000 for a
 	// $2/$10 per-million-token price.
@@ -240,20 +274,21 @@ func GetPricingAnalysis() (*PricingAnalysisResult, error) {
 		if probeErr != nil {
 			return nil, probeErr
 		}
-		probeResult := combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, tokenProbe.Label, true)
+		probeResult := combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, tokenProbe.Label, true, groups)
 		mergeTokenProbe(result, probeResult, tokenProbe.Label)
 		if tokenProbe.Label == "输入 1M token" {
-			repairNonTokenScenarioCosts(result, combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, "", false))
+			repairNonTokenScenarioCosts(result, combinePricingAnalysis(probeCost.Data.Rows, probePrices, quotaPerUnit, "", false, groups))
 		}
 	}
 	rebuildPricingExtremes(result)
 	result.Notes = []string{
 		"成本基准与价格簿由 new-api 当前计费引擎解析，插件只负责汇总和展示。",
+		"牌价是价格簿的原始价（未乘分组倍率）；实际零售价 = 牌价 × 主分组倍率，毛利按实际零售价算。",
+		"主分组 = AutoGroups 里第一个有该模型的分组（auto 令牌实际结算的分组）；模型不在任何 AutoGroups 分组时取倍率最低的分组。其他倍率不同的分组逐个列出。",
+		"未计入按客户的专属倍率（GroupGroupRatio）和图片专属价（group_billing_expr），它们只影响对应的企业客户；实际账单毛利以消费日志为准。",
 		"最高毛利使用可服务渠道中的最低成本；最低毛利使用可服务渠道中的最高成本。",
-		"成本范围按供应商成本计算，尚未叠加用户分组折扣；实际账单毛利以消费日志为准。",
 		"按 token、按次、按秒/时长、分辨率和表达式 tier 均单独列出，未定价不会被当成零成本。",
 	}
-	cm.Set(cacheKey, result, 10*time.Minute)
 	return result, nil
 }
 
@@ -334,7 +369,7 @@ type costCandidate struct {
 	Serves        bool
 }
 
-func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow, quotaPerUnit float64, scenarioPrefix string, normalizeToken bool) *PricingAnalysisResult {
+func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow, quotaPerUnit float64, scenarioPrefix string, normalizeToken bool, groups pricingGroupConfig) *PricingAnalysisResult {
 	costs := make(map[string]map[string][]costCandidate)
 	for _, row := range costRows {
 		if costs[row.ModelName] == nil {
@@ -360,38 +395,45 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 
 	result := &PricingAnalysisResult{QuotaPerUnit: int64(quotaPerUnit), Currency: "USD", Models: make([]PricingModelAnalysis, 0, len(priceRows))}
 	for _, price := range priceRows {
+		sell := groups.sellGroups(price.ModelName)
 		model := PricingModelAnalysis{
 			ModelName:               price.ModelName,
 			Mode:                    price.Mode,
 			Expression:              price.Expr,
 			PromptUSDPerMillion:     price.PromptUSDPerMillion,
 			CompletionUSDPerMillion: price.CompletionUSDPerMillion,
+			SellGroups:              sell,
 			Scenarios:               make([]PricingScenario, 0),
+		}
+		// Every price-book number is a list price; the scenario prices it at
+		// the model's primary group ratio.
+		scenario := func(tier, condition string, list float64, candidates []costCandidate) PricingScenario {
+			return makeGroupPricedScenario(price.ModelName, tier, condition, list, candidates, sell)
 		}
 		switch price.Mode {
 		case "tiered_expr":
 			conditionHints := pricingConditionHints(price.Expr)
 			for _, tier := range append(append([]priceBookTier{}, price.Tiers...), price.UnnamedTiers...) {
-				retail := tier.USD
+				list := tier.USD
 				if normalizeToken && hasTokenExpression(price.Expr) {
-					retail /= 1_000_000
+					list /= 1_000_000
 				}
 				tierName := tier.Tier
 				if scenarioPrefix != "" {
 					tierName = scenarioPrefix + " · " + tierName
 				}
-				model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, tierName, conditionHints[tier.Tier], retail, costs[price.ModelName][tier.Tier]))
+				model.Scenarios = append(model.Scenarios, scenario(tierName, conditionHints[tier.Tier], list, costs[price.ModelName][tier.Tier]))
 			}
 		case "per_call":
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "per_call"), "每次请求固定价", price.PerCallUSD, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, scenario(scenarioName(scenarioPrefix, "per_call"), "每次请求固定价", price.PerCallUSD, flattenCandidates(costs[price.ModelName])))
 		case "per_token":
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "input_1m"), "每 1M 输入 token", price.PromptUSDPerMillion, flattenCandidates(costs[price.ModelName])))
-			model.Scenarios = append(model.Scenarios, makePricingScenario(price.ModelName, scenarioName(scenarioPrefix, "output_1m"), "每 1M 输出 token", price.CompletionUSDPerMillion, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, scenario(scenarioName(scenarioPrefix, "input_1m"), "每 1M 输入 token", price.PromptUSDPerMillion, flattenCandidates(costs[price.ModelName])))
+			model.Scenarios = append(model.Scenarios, scenario(scenarioName(scenarioPrefix, "output_1m"), "每 1M 输出 token", price.CompletionUSDPerMillion, flattenCandidates(costs[price.ModelName])))
 		default:
 			model.Unpriced = true
 		}
 		for _, scenario := range model.Scenarios {
-			if len(model.Scenarios) == 0 || scenario.Status == "unpriced" {
+			if !pricingScenarioHasMargin(scenario) {
 				continue
 			}
 			if len(model.BestScenario) == 0 || scenario.HighestMarginPercent > model.BestMarginPercent {
@@ -408,7 +450,7 @@ func combinePricingAnalysis(costRows []costBaselineRow, priceRows []priceBookRow
 	sort.Slice(result.Models, func(i, j int) bool { return result.Models[i].WorstMarginPercent < result.Models[j].WorstMarginPercent })
 	for _, model := range result.Models {
 		for _, scenario := range model.Scenarios {
-			if scenario.Status == "unpriced" {
+			if !pricingScenarioHasMargin(scenario) {
 				continue
 			}
 			result.Worst = append(result.Worst, scenario)
@@ -511,7 +553,7 @@ func rebuildPricingExtremes(result *PricingAnalysisResult) {
 		model.BestScenario = ""
 		model.WorstScenario = ""
 		for _, scenario := range model.Scenarios {
-			if scenario.Status == "unpriced" {
+			if !pricingScenarioHasMargin(scenario) {
 				continue
 			}
 			if model.BestScenario == "" || scenario.HighestMarginPercent > model.BestMarginPercent {
@@ -588,12 +630,18 @@ func makePricingScenario(model, tier, condition string, retail float64, candidat
 			scenario.HighestCostChannel = candidate.ChannelName
 		}
 	}
-	if retail <= 0 || scenario.CostRoutes == 0 || math.IsInf(minCost, 0) {
+	if scenario.CostRoutes == 0 || math.IsInf(minCost, 0) {
 		scenario.Status = "unpriced"
 		return scenario
 	}
+	// The cost range is known even when the retail price is not, and the
+	// other selling groups' margins are computed from it.
 	scenario.LowestCostUSD = minCost
 	scenario.HighestCostUSD = maxCost
+	if retail <= 0 {
+		scenario.Status = "unpriced"
+		return scenario
+	}
 	scenario.HighestMarginPercent = (retail - minCost) / retail * 100
 	scenario.LowestMarginPercent = (retail - maxCost) / retail * 100
 	for index := range scenario.Routes {
