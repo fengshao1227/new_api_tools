@@ -39,12 +39,13 @@
 | 模块 | 能力 |
 |---|---|
 | 经营仪表盘 | 最上面是增长（本月/累计注册、付费、收入 + 按日/按月趋势表）；下面按今天 / 7 天 / 30 天看计费额、供应商成本、实际消费收入与毛利（与毛利页同口径）、现金收入，注册转化（按来源 / 国家），赠额发放与负债、网关风控待审与扣住金额，异步任务成败与失败原因、退款，上游账户与未关闭告警，定价缺口（无成本表达式的模型、未定价调用），以及排除免费模型后的模型排行。风控页、上游监控、告警表不存在时对应卡片显示「无数据」。 |
-| 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细拆分注册用户，并对照成功充值标记已付费、未付费和付费率。 |
+| 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细、注册国家（`signup_country`）和赠额档位（`grant_region`，附实发赠额）拆分注册用户，并对照成功充值标记已付费、未付费和付费率；排除面板白名单（内部账号、管理员）。 |
 | 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
 | IP 分析 | IP 分布、单个 IP 反查，以及用户 / 令牌的只读风险画像。风控本身在网关 new-api 中执行。 |
 | 模型监控 | 需登录的模型状态看板，支持时间窗口、刷新间隔、排序和分组。 |
-| 用户与令牌运维 | 用户列表与分组筛选、经网关管理接口封禁/解封（封禁理由对用户可见）、令牌统计。 |
+| 渠道监控 | 渠道状态、测速、窗口请求量与错误率、单点模型；余额逐渠道显示上游自报值（币种以上游为准），不做合计。 |
+| 用户与令牌运维 | 用户列表带是否付费、剩余赠额、注册国家 / 赠额档位、网关风控状态和全部登录方式（含控制台配置的 OAuth 提供方），可按分组与登录方式筛选；经网关管理接口封禁/解封（封禁理由对用户可见）。令牌按网关的有效状态统计（手动禁用、已过期、额度耗尽分开），批量禁用/启用写入数据目录下的 `token_audit.jsonl`，令牌页列出最近操作。 |
 
 ## 架构边界
 
@@ -165,7 +166,8 @@ npm run dev
 | 用户分析 | `GET /api/risk/users/:id/analysis`、`GET /api/ip/lookup/:ip`、`GET /api/ip/geo/*` |
 | 模型状态 | `/api/model-status/*`（需登录；`status/batch`、`status/multiple` 单次最多 100 个模型） |
 | 来源分析 | `GET /api/acquisition/overview?days=30`（`days=0` 为全部时间） |
-| 用户与令牌 | `GET /api/users`、`GET /api/users/groups`、`POST /api/users/:id/ban`、`POST /api/users/:id/unban`（转调网关）、`GET /api/tokens` |
+| 用户与令牌 | `GET /api/users`、`GET /api/users/groups`、`GET /api/users/login-sources`、`POST /api/users/:id/ban`、`POST /api/users/:id/unban`（转调网关）、`GET /api/tokens`、`GET /api/tokens/statistics`、`POST /api/tokens/batch-disable`、`POST /api/tokens/batch-enable`、`GET /api/tokens/audit` |
+| 渠道监控 | `GET /api/channels/{overview,log-stats,ability-matrix,model-health,error-analysis}` |
 | 存储与系统 | `GET /api/storage/*`、`GET /api/system/*` |
 
 ## 数据来源说明
