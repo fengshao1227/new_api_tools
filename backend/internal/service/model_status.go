@@ -89,10 +89,18 @@ func (s *ModelStatusService) GetAvailableModels() ([]map[string]interface{}, err
 	return rows, nil
 }
 
-// GetModelStatus returns status for a specific model
-// Uses a single GROUP BY FLOOR query (matches Python backend optimization)
+// GetModelStatus returns status for a specific model.
+//
+// The success rate is what customers got, counted the gateway's way
+// (ops_alert_patrol.go opsFailureSpikeTallies): a synchronous request by
+// whether any of its attempts was served — retries on other channels are not
+// failures — and a task by its final status in tasks. A task's receipt says the
+// task was accepted, not that it succeeded, so a model that runs tasks is
+// measured by its tasks alone. Failures that were the caller's own doing
+// (ClassifyFailure: moderation, parameters, inputs, their balance, hanging up)
+// are left out of both sides and reported as user_error_count.
 func (s *ModelStatusService) GetModelStatus(modelName, window string) (map[string]interface{}, error) {
-	cacheKey := fmt.Sprintf("model_status:%s:%s", modelName, window)
+	cacheKey := fmt.Sprintf("model_status:v2:%s:%s", modelName, window)
 	cm := cache.Get()
 	var cached map[string]interface{}
 	found, _ := cm.GetJSON(cacheKey, &cached)
@@ -105,123 +113,46 @@ func (s *ModelStatusService) GetModelStatus(modelName, window string) (map[strin
 	if !ok {
 		twConfig = timeWindowConfigs["24h"]
 	}
-
 	now := time.Now().Unix()
 	startTime := now - twConfig.totalSeconds
-	numSlots := twConfig.numSlots
-	slotSeconds := twConfig.slotSeconds
-
-	// Single optimized query — aggregate by time slot using FLOOR division
-	// This reduces N queries to 1 query per model (matches Python backend)
-	//
-	// Success counting strategy:
-	//   - type=2 with completion_tokens > 0 → definite success
-	//   - type=2 with completion_tokens = 0 → empty response (likely failure)
-	//   - type=5 → explicit failure (if NewAPI version supports it)
-	// This ensures correct success rate even when NewAPI doesn't log type=5 failures.
-	// NOTE: alias must be empty_count, not empty — EMPTY is a reserved word in MySQL 8.
-	slotQuery := s.logDB.RebindQuery(fmt.Sprintf(`
-		SELECT FLOOR((created_at - %d) / %d) as slot_idx,
-			COUNT(*) as total,
-			SUM(CASE WHEN type = 2 AND completion_tokens > 0 THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN type = 5 THEN 1 ELSE 0 END) as failure,
-			SUM(CASE WHEN type = 2 AND completion_tokens = 0 THEN 1 ELSE 0 END) as empty_count
-		FROM logs
-		WHERE model_name = ?
-			AND created_at >= ? AND created_at < ?
-			AND type IN (2, 5)
-		GROUP BY FLOOR((created_at - %d) / %d)`,
-		startTime, slotSeconds,
-		startTime, slotSeconds))
-
-	rows, _ := s.logDB.Query(slotQuery, modelName, startTime, now)
-
-	// Initialize all slots with zeros
-	type slotInfo struct {
-		total   int64
-		success int64
-		failure int64
-		empty   int64
-	}
-	slotMap := make(map[int64]*slotInfo, numSlots)
-
-	// Fill in actual data from query results
-	if rows != nil {
-		for _, row := range rows {
-			idx := toInt64(row["slot_idx"])
-			if idx >= 0 && idx < int64(numSlots) {
-				slotMap[idx] = &slotInfo{
-					total:   toInt64(row["total"]),
-					success: toInt64(row["success"]),
-					failure: toInt64(row["failure"]),
-					empty:   toInt64(row["empty_count"]),
-				}
-			}
-		}
+	slots, err := s.modelStatusSlots(modelName, twConfig, startTime, now)
+	if err != nil {
+		return nil, err
 	}
 
-	// Build slot_data list with status colors
-	slotData := make([]map[string]interface{}, 0, numSlots)
-	totalReqs := int64(0)
-	totalSuccess := int64(0)
-	totalFailure := int64(0)
-	totalEmpty := int64(0)
-
-	for i := 0; i < numSlots; i++ {
-		slotStart := startTime + int64(i)*slotSeconds
-		slotEnd := slotStart + slotSeconds
-
-		si := slotMap[int64(i)]
-		slotTotal := int64(0)
-		slotSuccess := int64(0)
-		slotFailure := int64(0)
-		slotEmpty := int64(0)
-		if si != nil {
-			slotTotal = si.total
-			slotSuccess = si.success
-			slotFailure = si.failure
-			slotEmpty = si.empty
-		}
-
-		slotRate := float64(100)
-		if slotTotal > 0 {
-			slotRate = float64(slotSuccess) / float64(slotTotal) * 100
-		}
-
+	slotData := make([]map[string]interface{}, 0, len(slots))
+	var total statusSlot
+	for i, slot := range slots {
+		slotStart := startTime + int64(i)*twConfig.slotSeconds
+		requests, rate := slot.successRate()
 		slotData = append(slotData, map[string]interface{}{
-			"slot":           i,
-			"start_time":     slotStart,
-			"end_time":       slotEnd,
-			"total_requests": slotTotal,
-			"success_count":  slotSuccess,
-			"failure_count":  slotFailure,
-			"empty_count":    slotEmpty,
-			"success_rate":   roundRate(slotRate),
-			"status":         getStatusColor(slotRate, slotTotal),
+			"slot":             i,
+			"start_time":       slotStart,
+			"end_time":         slotStart + twConfig.slotSeconds,
+			"total_requests":   requests,
+			"success_count":    slot.success,
+			"failure_count":    slot.failure,
+			"user_error_count": slot.userErrors,
+			"empty_count":      slot.empty,
+			"success_rate":     roundRate(rate),
+			"status":           getStatusColor(rate, requests),
 		})
-
-		totalReqs += slotTotal
-		totalSuccess += slotSuccess
-		totalFailure += slotFailure
-		totalEmpty += slotEmpty
+		total.add(slot)
 	}
 
-	overallRate := float64(100)
-	if totalReqs > 0 {
-		overallRate = float64(totalSuccess) / float64(totalReqs) * 100
-	}
-
+	totalRequests, overallRate := total.successRate()
 	result := map[string]interface{}{
-		"model_name":     modelName,
-		"display_name":   modelName,
-		"time_window":    window,
-		"total_requests": totalReqs,
-		"success_count":  totalSuccess,
-		"failure_count":  totalFailure,
-		"empty_count":    totalEmpty,
-		"success_rate":   roundRate(overallRate),
-		"current_status": getStatusColor(overallRate, totalReqs),
-		"slot_data":      slotData,
+		"model_name":       modelName,
+		"display_name":     modelName,
+		"time_window":      window,
+		"total_requests":   totalRequests,
+		"success_count":    total.success,
+		"failure_count":    total.failure,
+		"user_error_count": total.userErrors,
+		"empty_count":      total.empty,
+		"success_rate":     roundRate(overallRate),
+		"current_status":   getStatusColor(overallRate, totalRequests),
+		"slot_data":        slotData,
 	}
 
 	cm.Set(cacheKey, result, 30*time.Second)

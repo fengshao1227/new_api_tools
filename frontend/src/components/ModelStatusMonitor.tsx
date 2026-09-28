@@ -17,12 +17,18 @@ import {
   Ai360, Doubao, Wenxin, Meta, Coze, Cerebras, Kimi, NewAPI, ZAI, ModelScope
 } from '@lobehub/icons'
 
+/**
+ * 口径同网关的客户失败率：同步请求任一次尝试成功即成功，任务看终态；
+ * 用户侧失败（内容违规、参数、素材、余额、客户断开）不进分子也不进分母，只在 user_error_count 里单列。
+ */
 interface SlotStatus {
   slot: number
   start_time: number
   end_time: number
   total_requests: number
   success_count: number
+  failure_count?: number
+  user_error_count?: number
   success_rate: number
   status: 'green' | 'yellow' | 'red'
 }
@@ -2043,6 +2049,18 @@ function ModelStatusCard({ model, dragHandleProps }: ModelStatusCardProps) {
                   <span>成功:</span>
                   <span className="font-medium text-green-600">{hoveredSlot.success_count}</span>
                 </div>
+                {(hoveredSlot.failure_count ?? 0) > 0 && (
+                  <div className="flex justify-between gap-4">
+                    <span>失败:</span>
+                    <span className="font-medium text-red-600">{hoveredSlot.failure_count}</span>
+                  </div>
+                )}
+                {(hoveredSlot.user_error_count ?? 0) > 0 && (
+                  <div className="flex justify-between gap-4" title="内容违规、参数错误、素材问题、余额不足、客户先断开：不计入成功率">
+                    <span>用户侧（不计）:</span>
+                    <span className="font-medium">{hoveredSlot.user_error_count}</span>
+                  </div>
+                )}
                 <div className="flex justify-between gap-4">
                   <span>成功率:</span>
                   <span className={cn(

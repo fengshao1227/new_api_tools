@@ -322,3 +322,50 @@ func TestChannelHealthCountsOnlyChannelSideFailures(t *testing.T) {
 		t.Errorf("error analysis categories = channel %v, user %v", analysis.ChannelCategories, analysis.UserCategories)
 	}
 }
+
+func TestModelStatusCountsWhatCustomersGot(t *testing.T) {
+	now := time.Now().Unix()
+	at := now - 600
+	f := newMonitorFixture()
+	// A synchronous model. r1 failed on ch4, then ch5 served it: a success.
+	f.failed(at, 4, "status-chat", "r1", text5xx)
+	f.served(at+2, 5, "status-chat", 1, "r1")
+	// r2: the customer's prompt was refused everywhere.
+	f.failed(at, 4, "status-chat", "r2", textImageModeration)
+	// r3: two channels failed it: one failed request, not two.
+	f.failed(at, 4, "status-chat", "r3", text5xx)
+	f.failed(at+1, 5, "status-chat", "r3", textTimeout)
+	f.served(at, 5, "status-chat", 2, "")
+	// A task model: receipts are not successes; tasks are; a submission
+	// error line does not count for a model measured by its tasks.
+	for range 4 {
+		f.receipt(at, 8, "status-video")
+	}
+	f.failed(at, 8, "status-video", "", text5xx)
+	f.task(at, 8, "status-video", "SUCCESS", "")
+	f.task(at, 8, "status-video", "SUCCESS", "")
+	f.task(at, 8, "status-video", "FAILURE", "The request failed because the input image 'content[1]' may contain real person.")
+	f.task(at, 8, "status-video", "FAILURE", "upstream dispatch did not complete")
+
+	biz := newBusinessTestService(t, f.statements...)
+	svc := &ModelStatusService{db: biz.db, logDB: biz.logDB}
+	cases := []struct {
+		model                                  string
+		requests, success, failure, userErrors int64
+	}{
+		{"status-chat", 4, 3, 1, 1},
+		{"status-video", 3, 2, 1, 1},
+	}
+	for _, tc := range cases {
+		got, err := svc.GetModelStatus(tc.model, "1h")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if toInt64(got["total_requests"]) != tc.requests || toInt64(got["success_count"]) != tc.success ||
+			toInt64(got["failure_count"]) != tc.failure || toInt64(got["user_error_count"]) != tc.userErrors {
+			t.Errorf("%s = %v requests, %v ok, %v failed, %v user; want %d / %d / %d / %d", tc.model,
+				got["total_requests"], got["success_count"], got["failure_count"], got["user_error_count"],
+				tc.requests, tc.success, tc.failure, tc.userErrors)
+		}
+	}
+}
