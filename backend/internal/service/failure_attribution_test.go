@@ -1,6 +1,11 @@
 package service
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
 
 // Every raw text is a failure the gateway stored in production (logs.content
 // of an error line, or tasks.fail_reason). The first block is the gateway's own
@@ -123,5 +128,197 @@ func TestHealthLevelNeedsFiveAttemptsAndUsesTheGatewayLines(t *testing.T) {
 		if got := healthLevel(tc.success, tc.errors); got != tc.want {
 			t.Errorf("healthLevel(%d ok, %d failed) = %s, want %s", tc.success, tc.errors, got, tc.want)
 		}
+	}
+}
+
+// monitorFixture builds the gateway tables the monitors read, in SQLite.
+type monitorFixture struct {
+	statements []string
+	nextID     int
+}
+
+func newMonitorFixture() *monitorFixture {
+	return &monitorFixture{statements: []string{
+		`CREATE TABLE logs (id INTEGER PRIMARY KEY, created_at INTEGER, type INTEGER, channel_id INTEGER, model_name TEXT,
+			request_id TEXT, username TEXT, content TEXT, other TEXT, completion_tokens INTEGER, use_time INTEGER)`,
+		`CREATE TABLE channels (id INTEGER PRIMARY KEY, setting TEXT)`,
+		`CREATE TABLE tasks (id INTEGER PRIMARY KEY, created_at INTEGER, channel_id INTEGER, platform TEXT, status TEXT,
+			fail_reason TEXT, submit_time INTEGER, finish_time INTEGER, properties TEXT)`,
+	}}
+}
+
+func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// served adds n served requests (consume lines) of model on channel.
+func (f *monitorFixture) served(at int64, channel int, model string, n int, requestID string) {
+	for range n {
+		f.nextID++
+		rid := requestID
+		if rid == "" {
+			rid = fmt.Sprintf("ok-%d", f.nextID)
+		}
+		f.statements = append(f.statements, fmt.Sprintf(`INSERT INTO logs VALUES (%d, %d, 2, %d, %s, %s, 'u', '', '{}', 20, 4)`,
+			f.nextID, at, channel, sqlQuote(model), sqlQuote(rid)))
+	}
+}
+
+// receipt adds a task's receipt: a consume line that only says it was accepted.
+func (f *monitorFixture) receipt(at int64, channel int, model string) {
+	f.nextID++
+	f.statements = append(f.statements, fmt.Sprintf(`INSERT INTO logs VALUES (%d, %d, 2, %d, %s, 'task-%d', 'u', '', '{"is_task":true}', 0, 0)`,
+		f.nextID, at, channel, sqlQuote(model), f.nextID))
+}
+
+// failed adds one error line.
+func (f *monitorFixture) failed(at int64, channel int, model, requestID, content string) {
+	f.nextID++
+	if requestID == "" {
+		requestID = fmt.Sprintf("err-%d", f.nextID)
+	}
+	f.statements = append(f.statements, fmt.Sprintf(`INSERT INTO logs VALUES (%d, %d, 5, %d, %s, %s, 'u', %s, '{}', 0, 0)`,
+		f.nextID, at, channel, sqlQuote(model), sqlQuote(requestID), sqlQuote(content)))
+}
+
+func (f *monitorFixture) task(at int64, channel int, model, status, reason string) {
+	f.nextID++
+	f.statements = append(f.statements, fmt.Sprintf(`INSERT INTO tasks VALUES (%d, %d, %d, 'p', %s, %s, %d, %d, %s)`,
+		f.nextID, at-120, channel, sqlQuote(status), sqlQuote(reason), at-120, at, sqlQuote(`{"origin_model_name":"`+model+`"}`)))
+}
+
+const (
+	textImageModeration = `status_code=403, {"error":{"message":"The request was rejected by prompt moderation. Please check that your prompt is a clear, policy-compliant image-generation request.","type":"upstream_error","param":"","code":403}}`
+	textVideoModeration = `status_code=400, {"error":{"code":"InputImageSensitiveContentDetected.PrivacyInformation","message":"The request failed because the input image 'content[1]' may contain real person. Request id: 0217899858","param":"","type":"BadRequest"}}`
+	textBadParameter    = `status_code=400, {"error":{"message":"invalid size \"4096x4096\": total pixels must be at most 8294400","type":"invalid_request_error"}}`
+	textOwnBalance      = "status_code=403, 预扣费额度失败, 用户剩余额度: ¥1.20, 需要预扣费额度: ¥1.80"
+	textHungUp          = "status_code=499, client closed the connection before the model responded"
+	textBadImage        = "status_code=400, Provider API error: You uploaded an unsupported image. Please make sure your image has of one the following formats: png, jpeg."
+	textUnsafeOutput    = "status_code=502, plugin gemini-image@2.7.0 hook parseSubmitResponse failed: Error: generation failed: The generated images appear to be unsafe. Try modifying the prompts or the seeds."
+	textQueueFull       = `status_code=429, {"type":"error","error":{"type":"rate_limit_error","message":"concurrent video task limit reached, please retry later (3)","http_code":"429"}}`
+	textSupplierBusy    = "status_code=429, Too many pending requests, please retry later"
+	text5xx             = "status_code=500, upstream error: do request failed"
+	textTimeout         = "status_code=524, bad response status code 524"
+	textNoCredit        = "status_code=502, plugin aistarslab@1.8.0 hook parseSubmitResponse failed: Error: 积分不足 at payloadOf (aistarslab.js:524:11(38))"
+	textEmpty           = "status_code=502, upstream returned empty text output"
+)
+
+func TestChannelHealthCountsOnlyChannelSideFailures(t *testing.T) {
+	now := time.Now().Unix()
+	at := now - 600
+	f := newMonitorFixture()
+	f.statements = append(f.statements, `INSERT INTO channels VALUES (3, '{"max_concurrent_tasks":4}')`, `INSERT INTO channels VALUES (4, '{"proxy":""}')`)
+	// ch1: healthy, and every customer mistake in the book.
+	f.served(at, 1, "img", 6, "")
+	for _, text := range []string{textImageModeration, textVideoModeration, textBadParameter, textOwnBalance, textHungUp, textBadImage, textUnsafeOutput} {
+		f.failed(at, 1, "img", "", text)
+	}
+	// ch2: nothing served, only customer mistakes — still not red.
+	for range 6 {
+		f.failed(at, 2, "img", "", textImageModeration)
+	}
+	// ch3: capped at 4 concurrent tasks and full five times: the queue.
+	f.served(at, 3, "video", 6, "")
+	for range 5 {
+		f.failed(at, 3, "video", "", textQueueFull)
+	}
+	// ch4: a supplier that keeps saying it is busy.
+	f.served(at, 4, "chat", 1, "")
+	for range 5 {
+		f.failed(at, 4, "chat", "", textSupplierBusy)
+	}
+	// ch5: 5xx, timeout, our empty wallet, an empty answer.
+	f.served(at, 5, "chat", 2, "")
+	for _, text := range []string{text5xx, textTimeout, textNoCredit, textEmpty} {
+		f.failed(at, 5, "chat", "", text)
+	}
+	// ch6 refused a size that ch7 then served for the same request.
+	f.failed(at, 6, "img", "req-x", textBadParameter)
+	f.served(at+5, 7, "img", 1, "req-x")
+	f.failed(at, 6, "img", "req-y", textBadParameter)
+	f.served(at, 6, "img", 5, "")
+	// ch8 runs tasks: receipts are not successes, tasks are.
+	for range 9 {
+		f.receipt(at, 8, "seedance")
+	}
+	for range 5 {
+		f.task(at, 8, "seedance", "SUCCESS", "")
+	}
+	f.task(at, 8, "seedance", "FAILURE", "The request failed because the input image 'content[1]' may contain real person.")
+	f.task(at, 8, "seedance", "FAILURE", "The request was rejected by prompt moderation.")
+	f.task(at, 8, "seedance", "FAILURE", "Provider API error: You uploaded an unsupported image.")
+	f.task(at, 8, "seedance", "FAILURE", "upstream dispatch did not complete")
+	// ch9: one failure is not a verdict.
+	f.failed(at, 9, "chat", "", text5xx)
+
+	biz := newBusinessTestService(t, f.statements...)
+	svc := &ChannelMonitorService{db: biz.db, logDB: biz.logDB}
+	stats, err := svc.channelHealthStats(now-3600, now+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]ChannelHealthStat{}
+	for _, s := range stats {
+		byID[s.ChannelID] = s
+	}
+	want := []struct {
+		channel                               int64
+		level                                 string
+		success, errors, userErrors, queueFul int64
+	}{
+		{1, HealthGreen, 6, 0, 7, 0},
+		{2, HealthIdle, 0, 0, 6, 0},
+		{3, HealthGreen, 6, 0, 0, 5},
+		{4, HealthRed, 1, 5, 0, 0},
+		{5, HealthYellow, 2, 4, 0, 0},
+		{6, HealthGreen, 5, 1, 1, 0},
+		{7, HealthIdle, 1, 0, 0, 0},
+		{8, HealthGreen, 5, 1, 3, 0},
+		{9, HealthIdle, 0, 1, 0, 0},
+	}
+	for _, w := range want {
+		got, ok := byID[w.channel]
+		if !ok {
+			t.Fatalf("channel %d missing from %+v", w.channel, stats)
+		}
+		if got.Level != w.level || got.Success != w.success || got.Errors != w.errors || got.UserErrors != w.userErrors || got.QueueFull != w.queueFul {
+			t.Errorf("channel %d = level %s, %d ok / %d errors / %d user / %d queue; want %s, %d / %d / %d / %d",
+				w.channel, got.Level, got.Success, got.Errors, got.UserErrors, got.QueueFull, w.level, w.success, w.errors, w.userErrors, w.queueFul)
+		}
+	}
+	if byID[1].ErrorRate != 0 || byID[1].Attempts != 13 {
+		t.Errorf("customer mistakes leaked into ch1's rate: %+v", byID[1])
+	}
+	if c := byID[5].ChannelCategories; c[FailureCatUpstreamError] != 1 || c[FailureCatTimeout] != 1 || c[FailureCatUpstreamAccount] != 1 || c[FailureCatEmptyResult] != 1 {
+		t.Errorf("ch5 categories = %v", c)
+	}
+	if byID[6].ChannelCategories[FailureCatParamRejected] != 1 || byID[6].UserCategories[FailureCatInvalidRequest] != 1 {
+		t.Errorf("ch6 = %+v, want the refusal another channel overruled counted, the other one not", byID[6])
+	}
+	if byID[8].TaskFinished != 9 || byID[8].AvgTaskSeconds == nil || *byID[8].AvgTaskSeconds != 120 {
+		t.Errorf("ch8 task outcomes = %+v", byID[8])
+	}
+
+	models, err := svc.modelHealthStats(now-3600, now+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		if m.ModelName == "seedance" && (m.SyncSuccess != 0 || m.EmptyCount != 0 || m.Success != 5 || m.Level != HealthGreen) {
+			t.Errorf("task receipts read as empty answers: %+v", m)
+		}
+		if m.ModelName == "img" && (m.Errors != 1 || m.UserErrors != 14 || m.Success != 12) {
+			t.Errorf("img model = %+v", m)
+		}
+	}
+
+	analysis, err := svc.errorAnalysis(now-3600, now+1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Total != 30 || analysis.ChannelErrors != 11 || analysis.UserErrors != 14 || analysis.QueueFull != 5 || analysis.Sampled != 5 {
+		t.Errorf("error analysis = total %d, channel %d, user %d, queue %d, sampled %d",
+			analysis.Total, analysis.ChannelErrors, analysis.UserErrors, analysis.QueueFull, analysis.Sampled)
+	}
+	if analysis.UserCategories[FailureCatContentPolicy] != 9 || analysis.ChannelCategories[FailureCatRateLimited] != 5 {
+		t.Errorf("error analysis categories = channel %v, user %v", analysis.ChannelCategories, analysis.UserCategories)
 	}
 }
