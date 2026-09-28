@@ -5,39 +5,23 @@ import { WarmupScreen } from './components/WarmupScreen'
 
 // 懒加载非首屏 tab — 显著降低初始包体积
 const TopUps = lazy(() => import('./components/TopUps').then(m => ({ default: m.TopUps })))
-const RedemptionCenter = lazy(() => import('./components/RedemptionCenter').then(m => ({ default: m.RedemptionCenter })))
-const Analytics = lazy(() => import('./components/Analytics').then(m => ({ default: m.Analytics })))
 const UserManagement = lazy(() => import('./components/UserManagement').then(m => ({ default: m.UserManagement })))
 const RealtimeRanking = lazy(() => import('./components/RealtimeRanking').then(m => ({ default: m.RealtimeRanking })))
 const IPAnalysis = lazy(() => import('./components/IPAnalysis').then(m => ({ default: m.IPAnalysis })))
 const ModelStatusMonitor = lazy(() => import('./components/ModelStatusMonitor').then(m => ({ default: m.ModelStatusMonitor })))
-const AutoGroup = lazy(() => import('./components/AutoGroup').then(m => ({ default: m.AutoGroup })))
 const Tokens = lazy(() => import('./components/Tokens').then(m => ({ default: m.Tokens })))
-const AbuseBroadcast = lazy(() => import('./components/AbuseBroadcast').then(m => ({ default: m.AbuseBroadcast })))
 const ChannelMonitor = lazy(() => import('./components/ChannelMonitor').then(m => ({ default: m.ChannelMonitor })))
-const CheckinAnalytics = lazy(() => import('./components/CheckinAnalytics').then(m => ({ default: m.CheckinAnalytics })))
 const TaskLogs = lazy(() => import('./components/TaskLogs').then(m => ({ default: m.TaskLogs })))
 const MarginAnalysis = lazy(() => import('./components/MarginAnalysis').then(m => ({ default: m.MarginAnalysis })))
 const AcquisitionSource = lazy(() => import('./components/AcquisitionSource').then(m => ({ default: m.AcquisitionSource })))
 
 // Valid tabs
-const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'risk', 'abuse-broadcast', 'ip-analysis', 'analytics', 'acquisition', 'model-status', 'users', 'tokens', 'auto-group', 'redemptions', 'channels', 'checkins', 'task-logs']
-
-// 旧路径迁移：generator / history 现合并到 redemptions 内部 tab
-const legacyRedirects: Record<string, string> = {
-  generator: '/redemptions?view=generator',
-  history: '/redemptions?view=history',
-}
+const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'risk', 'ip-analysis', 'acquisition', 'model-status', 'users', 'tokens', 'channels', 'task-logs']
 
 // Get initial tab from URL pathname (supports sub-routes like /risk/ip)
 const getInitialTab = (): TabType => {
   const pathname = window.location.pathname.slice(1) // Remove leading /
   const mainPath = pathname.split('/')[0] // Get first segment for main tab
-
-  if (legacyRedirects[mainPath]) {
-    window.history.replaceState(null, '', legacyRedirects[mainPath])
-    return 'redemptions'
-  }
 
   if (validTabs.includes(mainPath as TabType)) {
     return mainPath as TabType
@@ -46,10 +30,6 @@ const getInitialTab = (): TabType => {
   const hash = window.location.hash.slice(1)
   // 处理 #risk/ip 等格式
   const hashMain = hash.split('/')[0].replace('risk-', 'risk/')
-  if (legacyRedirects[hashMain]) {
-    window.history.replaceState(null, '', legacyRedirects[hashMain])
-    return 'redemptions'
-  }
   if (validTabs.includes(hashMain as TabType)) {
     // 重定向到新路由
     const subPath = hash.includes('/') ? hash.split('/').slice(1).join('/') : ''
@@ -161,20 +141,14 @@ function App() {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />
-      case 'redemptions':
-        return <RedemptionCenter />
       case 'topups':
         return <TopUps />
       case 'margin':
         return <MarginAnalysis />
       case 'risk':
         return <RealtimeRanking />
-      case 'abuse-broadcast':
-        return <AbuseBroadcast />
       case 'ip-analysis':
         return <IPAnalysis />
-      case 'analytics':
-        return <Analytics />
       case 'acquisition':
         return <AcquisitionSource />
       case 'model-status':
@@ -183,12 +157,8 @@ function App() {
         return <UserManagement />
       case 'tokens':
         return <Tokens />
-      case 'auto-group':
-        return <AutoGroup />
       case 'channels':
         return <ChannelMonitor />
-      case 'checkins':
-        return <CheckinAnalytics />
       case 'task-logs':
         return <TaskLogs />
       default:

@@ -1,15 +1,13 @@
-import { ReactNode, useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react'
-import { LayoutDashboard, Ticket, DollarSign, BarChart3, Users, LogOut, Activity, Globe, Monitor, UserPlus, Key, RadioTower, Bell, Menu, X, Server, CalendarCheck, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
+import { ReactNode, useEffect, useLayoutEffect, useState, useRef } from 'react'
+import { LayoutDashboard, DollarSign, Users, LogOut, Activity, Globe, Monitor, Key, Menu, X, Server, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from './ui/dialog'
 import { cn } from '../lib/utils'
-import { useAuth } from '../contexts/AuthContext'
-import { apiFetch, createAuthHeaders } from '../lib/api'
 
-export type TabType = 'dashboard' | 'risk' | 'abuse-broadcast' | 'ip-analysis' | 'redemptions' | 'topups' | 'margin' | 'analytics' | 'acquisition' | 'model-status' | 'users' | 'auto-group' | 'tokens' | 'channels' | 'checkins' | 'task-logs'
+export type TabType = 'dashboard' | 'risk' | 'ip-analysis' | 'topups' | 'margin' | 'acquisition' | 'model-status' | 'users' | 'tokens' | 'channels' | 'task-logs'
 
 interface DbStatus {
   connected: boolean
@@ -30,40 +28,31 @@ const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'topups', label: '充值记录', icon: DollarSign },
   { id: 'margin', label: '毛利分析', icon: TrendingUp },
   { id: 'risk', label: '风控中心', icon: Activity },
-  { id: 'abuse-broadcast', label: '联合广播', icon: RadioTower },
   { id: 'ip-analysis', label: 'IP分析', icon: Globe },
-  { id: 'analytics', label: '日志分析', icon: BarChart3 },
   { id: 'acquisition', label: '来源分析', icon: GitBranch },
   { id: 'task-logs', label: '任务日志', icon: ListChecks },
   { id: 'model-status', label: '模型监控', icon: Monitor },
   { id: 'channels', label: '渠道监控', icon: Server },
-  { id: 'checkins', label: '签到分析', icon: CalendarCheck },
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'tokens', label: '令牌管理', icon: Key },
-  { id: 'auto-group', label: '自动分组', icon: UserPlus },
-  { id: 'redemptions', label: '兑换码管理', icon: Ticket },
 ]
 
 // 功能项显隐配置（仪表板不可隐藏，作为兜底页）
 const HIDDEN_TABS_KEY = 'newapi_tools_hidden_tabs'
 
-// 用户从未保存过配置时默认关闭的功能页（用户改过一次后完全以其配置为准）
-const DEFAULT_HIDDEN_TABS: TabType[] = ['abuse-broadcast', 'checkins', 'auto-group']
-
 function loadHiddenTabs(): Set<TabType> {
   const raw = localStorage.getItem(HIDDEN_TABS_KEY)
-  if (raw === null) return new Set(DEFAULT_HIDDEN_TABS)
+  if (raw === null) return new Set()
   try {
     const saved = JSON.parse(raw)
-    if (Array.isArray(saved)) return new Set(saved.filter((id) => id !== 'dashboard'))
+    // 只保留仍存在的功能页：已下线页面的旧配置不应算作"有隐藏项"
+    if (Array.isArray(saved)) return new Set(saved.filter((id) => id !== 'dashboard' && tabs.some((t) => t.id === id)))
   } catch { /* ignore corrupted value */ }
-  return new Set(DEFAULT_HIDDEN_TABS)
+  return new Set()
 }
 
 export function Layout({ children, activeTab, onTabChange, onLogout }: LayoutProps) {
-  const { token } = useAuth()
   const [dbStatus, setDbStatus] = useState<DbStatus | null>(null)
-  const [unreadBroadcasts, setUnreadBroadcasts] = useState(0)
   const [indicatorStyle, setIndicatorStyle] = useState({ left: 0, width: 0, opacity: 0 })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -73,7 +62,6 @@ export function Layout({ children, activeTab, onTabChange, onLogout }: LayoutPro
   const activeTabLabel = tabs.find(tab => tab.id === activeTab)?.label ?? ''
 
   const visibleTabs = tabs.filter(tab => tab.id === 'dashboard' || !hiddenTabs.has(tab.id))
-  const broadcastVisible = !hiddenTabs.has('abuse-broadcast')
 
   const toggleTabHidden = (id: TabType) => {
     setHiddenTabs(prev => {
@@ -114,22 +102,6 @@ export function Layout({ children, activeTab, onTabChange, onLogout }: LayoutPro
     setMobileNavOpen(false)
   }, [activeTab])
 
-  const fetchUnreadBroadcasts = useCallback(async () => {
-    if (!token) return
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL || ''
-      const response = await apiFetch(`${apiUrl}/api/abuse-broadcast/unread-count`, {
-        headers: createAuthHeaders(token),
-      })
-      const data = await response.json()
-      if (data.success) {
-        setUnreadBroadcasts(Number(data.data?.unread || 0))
-      }
-    } catch {
-      setUnreadBroadcasts(0)
-    }
-  }, [token])
-
   useEffect(() => {
     const fetchDbStatus = async () => {
       try {
@@ -152,22 +124,6 @@ export function Layout({ children, activeTab, onTabChange, onLogout }: LayoutPro
     }
     fetchDbStatus()
   }, [])
-
-  useEffect(() => {
-    // 联合广播被隐藏时不轮询未读数
-    if (!broadcastVisible) {
-      setUnreadBroadcasts(0)
-      return
-    }
-    void fetchUnreadBroadcasts()
-    const timer = window.setInterval(() => void fetchUnreadBroadcasts(), 60000)
-    const listener = () => void fetchUnreadBroadcasts()
-    window.addEventListener('abuse-broadcast-unread-changed', listener)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('abuse-broadcast-unread-changed', listener)
-    }
-  }, [fetchUnreadBroadcasts, broadcastVisible])
 
   // 页签装不下时逐级缩小字号/间距（通过 CSS 变量），尽量避免横向滚动条；
   // 调整完再按最终布局重算滑动指示条位置。
@@ -244,26 +200,6 @@ export function Layout({ children, activeTab, onTabChange, onLogout }: LayoutPro
                 )}
               </div>
               <div className="flex items-center gap-1.5">
-                {broadcastVisible && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      window.history.pushState(null, '', '/abuse-broadcast?view=inbox')
-                      window.dispatchEvent(new CustomEvent('abuse-broadcast-open-inbox'))
-                      onTabChange('abuse-broadcast')
-                    }}
-                    className="relative text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                    title="联合广播收件箱"
-                  >
-                    <Bell className="h-4 w-4" />
-                    {unreadBroadcasts > 0 && (
-                      <span className="absolute -right-1 -top-1 min-w-4 h-4 rounded-full bg-red-500 px-1 text-[10px] leading-4 text-white font-bold text-center">
-                        {unreadBroadcasts > 99 ? '99+' : unreadBroadcasts}
-                      </span>
-                    )}
-                  </Button>
-                )}
                 <Button
                   variant="ghost"
                   size="sm"

@@ -21,6 +21,7 @@ func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 		g.GET("/activity-stats", GetActivityStats)
 		g.GET("/stats", GetActivityStats)
 		g.GET("/banned", GetBannedUsers)
+		g.GET("/groups", GetUserGroups)
 		g.GET("", GetUsers)
 		g.DELETE("/:user_id", DeleteUser)
 		g.POST("/batch-delete", BatchDeleteInactiveUsers)
@@ -59,6 +60,23 @@ func GetBannedUsers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
+// GET /api/users/groups
+func GetUserGroups(c *gin.Context) {
+	svc := service.NewUserManagementService()
+	groups, err := svc.GetUserGroups()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResp("QUERY_ERROR", err.Error(), ""))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"items": groups,
+			"total": len(groups),
+		},
+	})
 }
 
 // GET /api/users

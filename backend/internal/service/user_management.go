@@ -397,6 +397,30 @@ func (s *UserManagementService) GetUsers(params ListUsersParams) (map[string]int
 	}, nil
 }
 
+// GetUserGroups returns every distinct user group with its member count, for
+// the user list's group filter.
+func (s *UserManagementService) GetUserGroups() ([]map[string]interface{}, error) {
+	groupCol := s.db.QuoteIdentifier("group")
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT COALESCE(%s, 'default') as group_name, COUNT(*) as user_count
+		FROM users
+		WHERE deleted_at IS NULL
+		GROUP BY COALESCE(%s, 'default')
+		ORDER BY user_count DESC`, groupCol, groupCol))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, map[string]interface{}{
+			"group_name": toString(row["group_name"]),
+			"user_count": toInt64(row["user_count"]),
+		})
+	}
+	return result, nil
+}
+
 // GetBannedUsers returns banned users list
 func (s *UserManagementService) GetBannedUsers(page, pageSize int, search string) (map[string]interface{}, error) {
 	if page < 1 {

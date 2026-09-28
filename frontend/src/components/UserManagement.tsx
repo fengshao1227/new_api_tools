@@ -157,40 +157,13 @@ export function UserManagement() {
   const [invitedLoading, setInvitedLoading] = useState(false)
   const [invitedPage, setInvitedPage] = useState(1)
 
-  // 批量分组管理状态
+  // 分组 / 来源筛选
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const [groupFilter, setGroupFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
-  const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set())
-  const [batchTargetGroup, setBatchTargetGroup] = useState('')
-  const [batchMoving, setBatchMoving] = useState(false)
 
   // Linux.do 用户名查询状态
   const [linuxDoLookupLoading, setLinuxDoLookupLoading] = useState<string | null>(null)
-
-  const allSelectedOnPage = users.length > 0 && users.every((u) => selectedUserIds.has(u.id))
-
-  const toggleSelectAllOnPage = () => {
-    setSelectedUserIds((prev) => {
-      const next = new Set(prev)
-      const allSelected = users.length > 0 && users.every((u) => next.has(u.id))
-      if (allSelected) {
-        users.forEach((u) => next.delete(u.id))
-      } else {
-        users.forEach((u) => next.add(u.id))
-      }
-      return next
-    })
-  }
-
-  const toggleSelectUser = (userId: number) => {
-    setSelectedUserIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(userId)) next.delete(userId)
-      else next.add(userId)
-      return next
-    })
-  }
 
   const apiUrl = import.meta.env.VITE_API_URL || ''
 
@@ -233,7 +206,7 @@ export function UserManagement() {
   // 获取可用分组列表
   const fetchGroups = useCallback(async () => {
     try {
-      const response = await fetch(`${apiUrl}/api/auto-group/groups`, { headers: getAuthHeaders() })
+      const response = await fetch(`${apiUrl}/api/users/groups`, { headers: getAuthHeaders() })
       const data = await response.json()
       if (data.success) {
         setGroups(data.data.items)
@@ -242,43 +215,6 @@ export function UserManagement() {
       console.error('Failed to fetch groups:', error)
     }
   }, [apiUrl, getAuthHeaders])
-
-  // 批量移动用户到指定分组
-  const batchMoveUsers = async () => {
-    if (selectedUserIds.size === 0) {
-      showToast('error', '请选择用户')
-      return
-    }
-    if (!batchTargetGroup) {
-      showToast('error', '请选择目标分组')
-      return
-    }
-    setBatchMoving(true)
-    try {
-      const response = await fetch(`${apiUrl}/api/auto-group/batch-move`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          user_ids: Array.from(selectedUserIds),
-          target_group: batchTargetGroup,
-        }),
-      })
-      const data = await response.json()
-      if (data.success || data.data?.success_count > 0) {
-        showToast('success', data.data?.message || `成功移动 ${data.data?.success_count || 0} 个用户`)
-        setSelectedUserIds(new Set())
-        setBatchTargetGroup('')
-        fetchUsers()
-      } else {
-        showToast('error', data.message || '移动失败')
-      }
-    } catch (error) {
-      console.error('Failed to batch move users:', error)
-      showToast('error', '网络错误')
-    } finally {
-      setBatchMoving(false)
-    }
-  }
 
   // 预览清理软删除用户
   const previewPurgeSoftDeleted = async () => {
@@ -931,60 +867,6 @@ export function UserManagement() {
             </div>
           </div>
 
-          {/* Batch Move */}
-          {users.length > 0 && (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4 p-3 rounded-lg border bg-muted/20">
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="text-muted-foreground">
-                  已选择 <span className="font-medium text-foreground">{selectedUserIds.size}</span> 个
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={toggleSelectAllOnPage}
-                >
-                  {allSelectedOnPage ? '取消全选本页' : '全选本页'}
-                </Button>
-                {selectedUserIds.size > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8"
-                    onClick={() => setSelectedUserIds(new Set())}
-                  >
-                    清空
-                  </Button>
-                )}
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto sm:ml-auto">
-                <div className="w-full sm:w-48">
-                  <Select
-                    value={batchTargetGroup}
-                    onChange={(e) => setBatchTargetGroup(e.target.value)}
-                    disabled={batchMoving || selectedUserIds.size === 0}
-                  >
-                    <option value="">选择目标分组</option>
-                    {groups.map((g) => (
-                      <option key={g.group_name} value={g.group_name}>
-                        {g.group_name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <Button
-                  size="sm"
-                  onClick={batchMoveUsers}
-                  disabled={batchMoving || selectedUserIds.size === 0 || !batchTargetGroup}
-                >
-                  {batchMoving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                  批量移动
-                </Button>
-              </div>
-            </div>
-          )}
-
           {/* Users Table */}
           {loading && !users.length ? (
             <div className="flex justify-center py-12">
@@ -995,16 +877,6 @@ export function UserManagement() {
               <Table>
                 <TableHeader className="bg-muted/50">
                   <TableRow>
-                    <TableHead className="w-10">
-                      <input
-                        type="checkbox"
-                        role="checkbox"
-                        aria-label="全选本页用户"
-                        checked={allSelectedOnPage}
-                        onChange={toggleSelectAllOnPage}
-                        className="h-4 w-4 rounded border-input text-primary focus-visible:ring-2 focus-visible:ring-ring"
-                      />
-                    </TableHead>
                     <TableHead className="w-16">ID</TableHead>
                     <TableHead>用户</TableHead>
                     <TableHead className="hidden sm:table-cell">角色</TableHead>
@@ -1021,16 +893,6 @@ export function UserManagement() {
                 <TableBody>
                   {users.map((user) => (
                     <TableRow key={user.id} className="hover:bg-muted/50 transition-colors group">
-                      <TableCell className="w-10">
-                        <input
-                          type="checkbox"
-                          role="checkbox"
-                          aria-label={`选择用户 ${user.username}`}
-                          checked={selectedUserIds.has(user.id)}
-                          onChange={() => toggleSelectUser(user.id)}
-                          className="h-4 w-4 rounded border-input text-primary focus-visible:ring-2 focus-visible:ring-ring"
-                        />
-                      </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground tabular-nums">{user.id}</TableCell>
                       <TableCell>
                         <div
