@@ -37,7 +37,15 @@ type MarginAnalysisRange struct {
 }
 
 type MarginSummary struct {
-	Requests              int64   `json:"requests"`
+	Requests int64 `json:"requests"`
+	// BilledUSD is SUM(logs.quota) at the gateway's own prices — an internal
+	// transfer price, not revenue (ADR 0002). Shown next to cost so the gap
+	// between what the gateway charged and what suppliers charged is visible.
+	BilledUSD float64 `json:"billed_usd"`
+	// FreeUserBilledUSD is the part of BilledUSD consumed by accounts that never
+	// paid (customer_free / deleted_no_payment): the face value of gift credit
+	// they burned. GiftAndFreeCostUSD is what that traffic cost us.
+	FreeUserBilledUSD     float64 `json:"free_user_billed_usd"`
 	RealizedRevenueUSD    float64 `json:"realized_revenue_usd"`
 	ProviderCostUSD       float64 `json:"provider_cost_usd"`
 	GrossProfitUSD        float64 `json:"gross_profit_usd"`
@@ -64,6 +72,7 @@ type MarginSummary struct {
 type MarginDailyPoint struct {
 	Date               string  `json:"date"`
 	Requests           int64   `json:"requests"`
+	BilledUSD          float64 `json:"billed_usd"`
 	RevenueUSD         float64 `json:"revenue_usd"`
 	ProviderCostUSD    float64 `json:"provider_cost_usd"`
 	GrossProfitUSD     float64 `json:"gross_profit_usd"`
@@ -78,6 +87,7 @@ type MarginBreakdown struct {
 	ChannelID          int64   `json:"channel_id,omitempty"`
 	Bucket             string  `json:"bucket,omitempty"`
 	Requests           int64   `json:"requests"`
+	BilledUSD          float64 `json:"billed_usd"`
 	RevenueUSD         float64 `json:"revenue_usd"`
 	ProviderCostUSD    float64 `json:"provider_cost_usd"`
 	GrossProfitUSD     float64 `json:"gross_profit_usd"`
@@ -135,6 +145,8 @@ type marginUserState struct {
 
 type marginAccumulator struct {
 	Requests         int64
+	BilledQuota      float64
+	FreeBilledQuota  float64
 	RevenueQuota     float64
 	ProviderCost     float64
 	PaidTrafficCost  float64
@@ -159,6 +171,7 @@ func isInternalMarginBucket(bucket string) bool {
 
 func addMarginGroup(acc *marginAccumulator, row marginGroupRow, state marginUserState, giftQuota, giftCost float64) {
 	acc.Requests += row.Requests
+	acc.BilledQuota += row.Quota
 	acc.ProviderCost += row.Cost
 	acc.UnpricedCalls += row.Unpriced
 	acc.EstimatedCalls += row.Estimated
@@ -193,12 +206,15 @@ func addMarginGroup(acc *marginAccumulator, row marginGroupRow, state marginUser
 	// belongs in the result. Gift quota is tracked separately from the whole
 	// free/unpaid cost because old accounts may have exhausted their grant.
 	acc.GiftFreeCost += row.Cost
+	acc.FreeBilledQuota += row.Quota
 	acc.GiftProviderCost += giftCost
 	acc.GiftNominalQuota += giftQuota
 }
 
 func (a marginAccumulator) merge(other marginAccumulator) marginAccumulator {
 	a.Requests += other.Requests
+	a.BilledQuota += other.BilledQuota
+	a.FreeBilledQuota += other.FreeBilledQuota
 	a.RevenueQuota += other.RevenueQuota
 	a.ProviderCost += other.ProviderCost
 	a.PaidTrafficCost += other.PaidTrafficCost
@@ -608,6 +624,8 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 		Currency:     "USD",
 		Summary: MarginSummary{
 			Requests:              total.Requests,
+			BilledUSD:             marginMoney(total.BilledQuota),
+			FreeUserBilledUSD:     marginMoney(total.FreeBilledQuota),
 			RealizedRevenueUSD:    paidRevenue,
 			ProviderCostUSD:       providerCost,
 			GrossProfitUSD:        grossProfit,
@@ -688,6 +706,7 @@ func buildMarginDaily(values map[string]*marginAccumulator, startTime, endTime i
 		result = append(result, MarginDailyPoint{
 			Date:               key,
 			Requests:           acc.Requests,
+			BilledUSD:          marginMoney(acc.BilledQuota),
 			RevenueUSD:         revenue,
 			ProviderCostUSD:    marginMoney(acc.ProviderCost),
 			GrossProfitUSD:     revenue - marginMoney(acc.ProviderCost),
@@ -714,7 +733,7 @@ func buildMarginBreakdowns(values map[string]*marginAccumulator, names map[strin
 		}
 		result = append(result, MarginBreakdown{
 			Key: key, Name: name, Bucket: bucket,
-			Requests: acc.Requests, RevenueUSD: revenue, ProviderCostUSD: cost,
+			Requests: acc.Requests, BilledUSD: marginMoney(acc.BilledQuota), RevenueUSD: revenue, ProviderCostUSD: cost,
 			GrossProfitUSD: revenue - cost, MarginPercent: marginPercent(revenue-cost, revenue),
 			GiftAndFreeCostUSD: marginMoney(acc.GiftFreeCost), InternalCostUSD: marginMoney(acc.InternalCost),
 			UnpricedCalls: acc.UnpricedCalls, EstimatedCalls: acc.EstimatedCalls,
