@@ -253,6 +253,12 @@ func TestTasksHealthFoldsReasonsAndRefunds(t *testing.T) {
 		sqlf(`INSERT INTO tasks VALUES (3, %d, 'kling', 'FAILURE', 'upstream task 998877 timed out', '{"origin_model_name":"kling-v3"}')`, now-60),
 		sqlf(`INSERT INTO tasks VALUES (4, %d, 'suno', 'IN_PROGRESS', '', '{"origin_model_name":"suno-v5"}')`, now-60),
 		sqlf(`INSERT INTO tasks VALUES (5, %d, 'suno', 'FAILURE', 'bad prompt', '{}')`, now-90*86400), // outside window
+		// The customer's own failures: a refused image prompt, a refused
+		// video input, an image in a format the model does not take.
+		sqlf(`INSERT INTO tasks VALUES (6, %d, 'gemini', 'FAILURE', 'The request was rejected by prompt moderation. Please check that your prompt is a clear, policy-compliant image-generation request.', '{"origin_model_name":"nano-banana"}')`, now-60),
+		sqlf(`INSERT INTO tasks VALUES (7, %d, 'doubao', 'FAILURE', 'The request failed because the input image ''content[1]'' may contain real person. Request id: 0217899858', '{"origin_model_name":"seedance-2"}')`, now-60),
+		sqlf(`INSERT INTO tasks VALUES (8, %d, 'gemini', 'FAILURE', 'Provider API error: You uploaded an unsupported image. Please make sure your image has of one the following formats: png, jpeg.', '{"origin_model_name":"nano-banana"}')`, now-60),
+		sqlf(`INSERT INTO tasks VALUES (9, %d, 'gemini', 'SUCCESS', '', '{"origin_model_name":"nano-banana"}')`, now-60),
 		sqlf(`INSERT INTO logs VALUES (1, 7, 6, 250000, %d)`, now-60),
 		sqlf(`INSERT INTO logs VALUES (2, 7, 2, 900000, %d)`, now-60),
 	)
@@ -261,17 +267,25 @@ func TestTasksHealthFoldsReasonsAndRefunds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tasks.Available || tasks.Total != 4 || tasks.Success != 1 || tasks.Failure != 2 || tasks.InFlight != 1 {
+	if !tasks.Available || tasks.Total != 8 || tasks.Success != 2 || tasks.Failure != 2 || tasks.UserFailure != 3 || tasks.InFlight != 1 {
 		t.Fatalf("task totals = %+v", tasks)
 	}
-	if !approx(tasks.FailureRate, 2.0/3) {
-		t.Fatalf("failure rate = %v, want failures over finished tasks", tasks.FailureRate)
+	if !approx(tasks.FailureRate, 2.0/4) {
+		t.Fatalf("failure rate = %v, want channel-side failures over successes plus channel-side failures", tasks.FailureRate)
 	}
-	if len(tasks.Rows) != 2 || tasks.Rows[0].Model != "kling-v3" || tasks.Rows[0].Failure != 2 {
+	if len(tasks.Rows) != 4 || tasks.Rows[0].Model != "kling-v3" || tasks.Rows[0].Failure != 2 {
 		t.Fatalf("task rows = %+v", tasks.Rows)
 	}
+	for _, row := range tasks.Rows {
+		if row.Model == "nano-banana" && (row.Failure != 0 || row.UserFailure != 2 || row.FailureRate != 0) {
+			t.Fatalf("user failures counted against the model: %+v", row)
+		}
+	}
 	if len(tasks.Reasons) != 1 || tasks.Reasons[0].Count != 2 || tasks.Reasons[0].Reason != "upstream task # timed out" {
-		t.Fatalf("failure reasons = %+v", tasks.Reasons)
+		t.Fatalf("channel-side failure reasons = %+v", tasks.Reasons)
+	}
+	if len(tasks.UserReasons) != 3 {
+		t.Fatalf("user-side failure reasons = %+v", tasks.UserReasons)
 	}
 	if tasks.RefundCount != 1 || !approx(tasks.RefundUSD, 0.5) {
 		t.Fatalf("refunds = %d / %v", tasks.RefundCount, tasks.RefundUSD)

@@ -25,6 +25,7 @@ export function BusinessTasksPanel({ state, lang }: { state: SectionState<Busine
     { header: t.colTotal, align: 'right', cell: (r) => num(r.total, locale) },
     { header: t.colSuccess, align: 'right', cell: (r) => num(r.success, locale) },
     { header: t.colFailure, align: 'right', cell: (r) => <span className={r.failure > 0 ? 'text-red-600' : ''}>{num(r.failure, locale)}</span> },
+    { header: t.colUserFailure, align: 'right', cell: (r) => <span className="text-muted-foreground">{num(r.user_failure, locale)}</span> },
     { header: t.failureRate, align: 'right', cell: (r) => pct(r.failure_rate) },
   ]
 
@@ -34,28 +35,18 @@ export function BusinessTasksPanel({ state, lang }: { state: SectionState<Busine
         <>
           {d.available ? (
             <>
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                 <Stat label={t.tasksTotal} value={num(d.total, locale)} />
                 <Stat label={t.tasksFailed} value={num(d.failure, locale)} tone={d.failure > 0 ? 'danger' : 'default'} />
+                <Stat label={t.tasksUserFailed} value={num(d.user_failure, locale)} sub={t.tasksUserFailedHint} />
                 <Stat label={t.failureRate} value={pct(d.failure_rate)} sub={t.failureRateHint} tone={d.failure_rate > 0.1 ? 'danger' : 'default'} />
                 <Stat label={t.tasksInFlight} value={num(d.in_flight, locale)} />
                 <Stat label={t.refunds} value={money(d.refund_usd)} sub={t.refundsSub(d.refund_count)} />
               </div>
               <MiniTable rows={d.rows} columns={columns} rowKey={(r) => `${r.platform}|${r.model}`} empty={DASHBOARD_TEXT[lang].noData} />
-              <div>
-                <div className="text-sm font-medium text-muted-foreground mb-2">{t.failReasons}</div>
-                {d.reasons.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t.noFailures}</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {d.reasons.map((r) => (
-                      <li key={r.reason} className="flex items-start justify-between gap-3 text-sm">
-                        <span className="break-all text-muted-foreground">{r.reason}</span>
-                        <span className="tabular-nums font-medium shrink-0">{num(r.count, locale)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <div className="grid gap-4 md:grid-cols-2">
+                <ReasonList title={t.failReasons} reasons={d.reasons} empty={t.noFailures} locale={locale} />
+                <ReasonList title={t.userFailReasons} reasons={d.user_reasons ?? []} empty={t.noFailures} locale={locale} muted />
               </div>
             </>
           ) : (
@@ -67,6 +58,32 @@ export function BusinessTasksPanel({ state, lang }: { state: SectionState<Busine
         </>
       )}
     </SectionShell>
+  )
+}
+
+function ReasonList({ title, reasons, empty, locale, muted = false }: {
+  title: string
+  reasons: { reason: string; count: number }[]
+  empty: string
+  locale: string
+  muted?: boolean
+}) {
+  return (
+    <div>
+      <div className="text-sm font-medium text-muted-foreground mb-2">{title}</div>
+      {reasons.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {reasons.map((r) => (
+            <li key={r.reason} className="flex items-start justify-between gap-3 text-sm">
+              <span className="break-all text-muted-foreground">{r.reason}</span>
+              <span className={cn('tabular-nums shrink-0', muted ? 'text-muted-foreground' : 'font-medium')}>{num(r.count, locale)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 

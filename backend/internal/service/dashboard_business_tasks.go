@@ -10,9 +10,15 @@ import (
 
 // Async task health: image/video/music jobs from the gateway's `tasks` table,
 // by platform and requested model (tasks keep the model in properties JSON,
-// origin_model_name). Failure rate is failures over finished tasks — a task
-// still running is neither — and in-flight counts are shown on their own.
-// Refunds are logs.type = 6, the credit handed back for failed tasks.
+// origin_model_name). A task still running is neither success nor failure;
+// in-flight counts are shown on their own. Refunds are logs.type = 6, the
+// credit handed back for failed tasks.
+//
+// Failures are attributed the gateway's way (ClassifyFailure): a refused
+// prompt, an unusable input image or a parameter the model does not accept is
+// the customer's own failure. Those are counted as user failures and left out
+// of the failure rate entirely — out of the failures and out of the finished
+// tasks it divides by, as the gateway's customer failure rate does.
 
 // BusinessTaskRow is one platform / model pair.
 type BusinessTaskRow struct {
@@ -21,6 +27,7 @@ type BusinessTaskRow struct {
 	Total       int64   `json:"total"`
 	Success     int64   `json:"success"`
 	Failure     int64   `json:"failure"`
+	UserFailure int64   `json:"user_failure"`
 	InFlight    int64   `json:"in_flight"`
 	FailureRate float64 `json:"failure_rate"`
 }
@@ -31,17 +38,21 @@ type BusinessTaskReason struct {
 	Count  int64  `json:"count"`
 }
 
-// BusinessTasks is the task-health section of the business view.
+// BusinessTasks is the task-health section of the business view. Failure and
+// Reasons are the channel / upstream side; UserFailure and UserReasons the
+// customer's own.
 type BusinessTasks struct {
 	Window      DashboardWindow      `json:"window"`
 	Available   bool                 `json:"available"`
 	Total       int64                `json:"total"`
 	Success     int64                `json:"success"`
 	Failure     int64                `json:"failure"`
+	UserFailure int64                `json:"user_failure"`
 	InFlight    int64                `json:"in_flight"`
 	FailureRate float64              `json:"failure_rate"`
 	Rows        []BusinessTaskRow    `json:"rows"`
 	Reasons     []BusinessTaskReason `json:"reasons"`
+	UserReasons []BusinessTaskReason `json:"user_reasons"`
 	RefundCount int64                `json:"refund_count"`
 	RefundUSD   float64              `json:"refund_usd"`
 }
@@ -76,8 +87,8 @@ func normalizeFailReason(reason string) string {
 // GetTasks returns task outcomes, failure reasons and refunds for a window.
 func (s *BusinessDashboardService) GetTasks(window string, noCache bool) (BusinessTasks, error) {
 	w := ResolveDashboardWindow(window, time.Now())
-	return businessCached("dashboard:beat:tasks:"+w.Key, 3*time.Minute, noCache, func() (BusinessTasks, error) {
-		result := BusinessTasks{Window: w, Rows: []BusinessTaskRow{}, Reasons: []BusinessTaskReason{}}
+	return businessCached("dashboard:beat:tasks:v2:"+w.Key, 3*time.Minute, noCache, func() (BusinessTasks, error) {
+		result := BusinessTasks{Window: w, Rows: []BusinessTaskRow{}, Reasons: []BusinessTaskReason{}, UserReasons: []BusinessTaskReason{}}
 		rows, err := s.loadTaskRows(w)
 		if isMissingSchemaErr(err) {
 			return s.withRefunds(result, w)
@@ -86,12 +97,14 @@ func (s *BusinessDashboardService) GetTasks(window string, noCache bool) (Busine
 			return result, err
 		}
 		result.Available = true
-		foldTaskRows(&result, rows, businessTaskRowLimit)
-		reasons, err := s.loadTaskReasons(w)
+		failures, err := s.loadTaskFailures(w)
 		if err != nil {
 			return result, err
 		}
-		result.Reasons = reasons
+		channelReasons, userReasons := splitTaskFailures(rows, failures)
+		foldTaskRows(&result, rows, businessTaskRowLimit)
+		result.Reasons = topFailReasons(channelReasons, businessTaskReasonLimit)
+		result.UserReasons = topFailReasons(userReasons, businessTaskReasonLimit)
 		return s.withRefunds(result, w)
 	})
 }
@@ -100,19 +113,11 @@ func (s *BusinessDashboardService) loadTaskRows(w DashboardWindow) ([]BusinessTa
 	counts := `COUNT(*) AS total,
 			COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) AS success,
 			COALESCE(SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END), 0) AS failure`
-	model := jsonTextExpr(s.db, "properties", "origin_model_name")
-	query := fmt.Sprintf(`SELECT COALESCE(platform, '') AS platform, COALESCE(%s, '') AS model, %s
-		FROM tasks WHERE created_at >= ? AND created_at <= ?
-		GROUP BY platform, %s`, model, counts, model)
-	rows, err := s.db.QueryWithTimeout(businessQueryTimeout, s.db.RebindQuery(query), w.Start, w.End)
-	if err != nil && !isMissingSchemaErr(err) {
-		// properties that the engine cannot read as JSON: keep the platform
-		// split rather than lose the section.
-		query = fmt.Sprintf(`SELECT COALESCE(platform, '') AS platform, '' AS model, %s
+	rows, err := queryTasksWithModel(s.db, func(modelSelect, modelGroup string) string {
+		return fmt.Sprintf(`SELECT COALESCE(platform, '') AS platform, %s AS model, %s
 			FROM tasks WHERE created_at >= ? AND created_at <= ?
-			GROUP BY platform`, counts)
-		rows, err = s.db.QueryWithTimeout(businessQueryTimeout, s.db.RebindQuery(query), w.Start, w.End)
-	}
+			GROUP BY platform%s`, modelSelect, counts, modelGroup)
+	}, w.Start, w.End)
 	if err != nil {
 		return nil, err
 	}
@@ -126,16 +131,68 @@ func (s *BusinessDashboardService) loadTaskRows(w DashboardWindow) ([]BusinessTa
 	return out, nil
 }
 
+// taskFailureGroup is the failed tasks of one platform / model sharing one
+// fail_reason.
+type taskFailureGroup struct {
+	Platform, Model, Reason string
+	Count                   int64
+}
+
+func (s *BusinessDashboardService) loadTaskFailures(w DashboardWindow) ([]taskFailureGroup, error) {
+	rows, err := queryTasksWithModel(s.db, func(modelSelect, modelGroup string) string {
+		return fmt.Sprintf(`SELECT COALESCE(platform, '') AS platform, %s AS model,
+				COALESCE(fail_reason, '') AS reason, COUNT(*) AS n
+			FROM tasks WHERE status = 'FAILURE' AND created_at >= ? AND created_at <= ?
+			GROUP BY platform, fail_reason%s`, modelSelect, modelGroup)
+	}, w.Start, w.End)
+	if err != nil {
+		return nil, fmt.Errorf("task failure reason query failed: %w", err)
+	}
+	out := make([]taskFailureGroup, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, taskFailureGroup{
+			Platform: toString(r["platform"]), Model: toString(r["model"]),
+			Reason: toString(r["reason"]), Count: toInt64(r["n"]),
+		})
+	}
+	return out, nil
+}
+
+// splitTaskFailures moves the customer's own failures out of each row's
+// Failure into UserFailure, and returns the normalised reasons of both sides.
+func splitTaskFailures(rows []BusinessTaskRow, failures []taskFailureGroup) (channelReasons, userReasons map[string]int64) {
+	index := make(map[string]int, len(rows))
+	for i, r := range rows {
+		index[r.Platform+"\x00"+r.Model] = i
+	}
+	channelReasons, userReasons = map[string]int64{}, map[string]int64{}
+	for _, f := range failures {
+		reason := normalizeFailReason(f.Reason)
+		if ClassifyFailure(f.Reason).Counted() {
+			channelReasons[reason] += f.Count
+			continue
+		}
+		userReasons[reason] += f.Count
+		if i, ok := index[f.Platform+"\x00"+f.Model]; ok {
+			moved := min(f.Count, rows[i].Failure)
+			rows[i].Failure -= moved
+			rows[i].UserFailure += moved
+		}
+	}
+	return channelReasons, userReasons
+}
+
 // foldTaskRows fills totals and keeps the rows that matter most: the most
-// failures first, then the busiest.
+// channel-side failures first, then the busiest.
 func foldTaskRows(result *BusinessTasks, rows []BusinessTaskRow, limit int) {
 	for i := range rows {
 		r := &rows[i]
-		r.InFlight = r.Total - r.Success - r.Failure
+		r.InFlight = r.Total - r.Success - r.Failure - r.UserFailure
 		r.FailureRate = ratio(r.Failure, r.Success+r.Failure)
 		result.Total += r.Total
 		result.Success += r.Success
 		result.Failure += r.Failure
+		result.UserFailure += r.UserFailure
 		result.InFlight += r.InFlight
 	}
 	result.FailureRate = ratio(result.Failure, result.Success+result.Failure)
@@ -154,24 +211,7 @@ func foldTaskRows(result *BusinessTasks, rows []BusinessTaskRow, limit int) {
 	result.Rows = rows
 }
 
-func (s *BusinessDashboardService) loadTaskReasons(w DashboardWindow) ([]BusinessTaskReason, error) {
-	rows, err := s.db.QueryWithTimeout(businessQueryTimeout, s.db.RebindQuery(`
-		SELECT COALESCE(fail_reason, '') AS reason, COUNT(*) AS n
-		FROM tasks WHERE status = 'FAILURE' AND created_at >= ? AND created_at <= ?
-		GROUP BY fail_reason
-		ORDER BY n DESC
-		LIMIT 200`), w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("task failure reason query failed: %w", err)
-	}
-	return foldFailReasons(rows, businessTaskReasonLimit), nil
-}
-
-func foldFailReasons(rows []map[string]interface{}, limit int) []BusinessTaskReason {
-	counts := map[string]int64{}
-	for _, r := range rows {
-		counts[normalizeFailReason(toString(r["reason"]))] += toInt64(r["n"])
-	}
+func topFailReasons(counts map[string]int64, limit int) []BusinessTaskReason {
 	out := make([]BusinessTaskReason, 0, len(counts))
 	for reason, n := range counts {
 		out = append(out, BusinessTaskReason{Reason: reason, Count: n})

@@ -133,12 +133,14 @@ export interface BusinessGiftsRisk {
   }
 }
 
+/** failure / reasons 只含渠道/上游侧；用户侧（内容违规、参数、素材）单列，不计入失败率。 */
 export interface TaskRow {
   platform: string
   model: string
   total: number
   success: number
   failure: number
+  user_failure: number
   in_flight: number
   failure_rate: number
 }
@@ -149,10 +151,12 @@ export interface BusinessTasks {
   total: number
   success: number
   failure: number
+  user_failure: number
   in_flight: number
   failure_rate: number
   rows: TaskRow[]
   reasons: { reason: string; count: number }[]
+  user_reasons: { reason: string; count: number }[]
   refund_count: number
   refund_usd: number
 }
