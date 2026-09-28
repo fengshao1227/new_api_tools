@@ -4,26 +4,38 @@ import "testing"
 
 func TestBuildMarginBucketSeparatesPaidFreeInternalAndDeletedUsers(t *testing.T) {
 	tests := []struct {
-		name  string
-		role  int64
-		found bool
-		paid  bool
-		topUp int64
-		want  string
+		name        string
+		role        int64
+		found       bool
+		paid        bool
+		topUp       int64
+		whitelisted bool
+		want        string
 	}{
-		{name: "paid customer", role: 1, found: true, paid: true, want: "customer_paid"},
+		{name: "paid customer", role: 1, found: true, paid: true, topUp: 500000, want: "customer_paid"},
 		{name: "free customer", role: 1, found: true, want: "customer_free"},
-		{name: "manual credit", role: 1, found: true, topUp: 500000, want: "manual_or_test_credit"},
+		{name: "offline B2B customer credited by an admin", role: 1, found: true, topUp: 500000, want: "customer_offline"},
 		{name: "staff", role: 100, found: true, paid: true, want: "staff_or_root"},
+		{name: "staff with admin credit", role: 10, found: true, topUp: 500000, want: "staff_or_root"},
+		{name: "whitelisted test account with admin credit", role: 1, found: true, topUp: 500000, whitelisted: true, want: "internal_whitelist"},
+		{name: "whitelisted account that also paid", role: 1, found: true, paid: true, whitelisted: true, want: "internal_whitelist"},
 		{name: "deleted paid", paid: true, want: "deleted_paid"},
 		{name: "deleted free", want: "deleted_no_payment"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := buildMarginBucket(tt.role, tt.found, tt.paid, tt.topUp); got != tt.want {
+			if got := buildMarginBucket(tt.role, tt.found, tt.paid, tt.topUp, tt.whitelisted); got != tt.want {
 				t.Fatalf("buildMarginBucket() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAddMarginGroupOfflineCustomerEarnsRevenue(t *testing.T) {
+	var acc marginAccumulator
+	addMarginGroup(&acc, marginGroupRow{Requests: 1, Quota: 100, Cost: 30}, marginUserState{Bucket: "customer_offline"}, 0, 0)
+	if acc.RevenueQuota != 100 || acc.PaidTrafficCost != 30 || acc.InternalCost != 0 {
+		t.Fatalf("offline customer = revenue %v/paid cost %v/internal %v, want 100/30/0", acc.RevenueQuota, acc.PaidTrafficCost, acc.InternalCost)
 	}
 }
 

@@ -26,8 +26,8 @@ interface MarginSummary {
   gift_nominal_usd: number
   gift_provider_cost_usd: number
   paid_customer_count: number
+  offline_paid_customer_count: number
   free_customer_count: number
-  manual_credit_user_count: number
   internal_user_count: number
   non_revenue_user_count: number
   unpriced_calls: number
@@ -154,11 +154,12 @@ function number(value: number) {
 function bucketLabel(bucket?: string) {
   switch (bucket) {
     case 'customer_paid': return '已付费客户'
+    case 'customer_offline': return '线下结算客户'
     case 'deleted_paid': return '已删除但有付款'
     case 'customer_free': return '免费/赠额客户'
     case 'deleted_no_payment': return '已删除未付款'
-    case 'manual_or_test_credit': return '手工授信/测试'
-    case 'staff_or_root': return '管理员/内部'
+    case 'staff_or_root': return '管理员'
+    case 'internal_whitelist': return '内部（面板白名单）'
     default: return bucket || '未知'
   }
 }
@@ -393,8 +394,8 @@ export function MarginAnalysis() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">赠额名义消耗</div><div className="mt-1 text-xl font-semibold">{money(summary.gift_nominal_usd)}</div><div className="text-xs text-muted-foreground">供应商实际成本 {money(summary.gift_provider_cost_usd)}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">付费客户</div><div className="mt-1 text-xl font-semibold">{number(summary.paid_customer_count)}</div><div className="text-xs text-muted-foreground">免费客户 {number(summary.free_customer_count)}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">内部/测试成本</div><div className="mt-1 text-xl font-semibold">{money(summary.internal_cost_usd)}</div><div className="text-xs text-muted-foreground">手工授信 {number(summary.manual_credit_user_count)} 个账号</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">付费客户</div><div className="mt-1 text-xl font-semibold">{number(summary.paid_customer_count)}</div><div className="text-xs text-muted-foreground">其中线下结算 {number(summary.offline_paid_customer_count)} · 免费客户 {number(summary.free_customer_count)}</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">内部/测试成本</div><div className="mt-1 text-xl font-semibold">{money(summary.internal_cost_usd)}</div><div className="text-xs text-muted-foreground">管理员与面板白名单 {number(summary.internal_user_count)} 个账号</div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">成本数据风险</div><div className="mt-1 text-xl font-semibold">{number(summary.unpriced_calls + summary.estimated_calls)} 条</div><div className="text-xs text-muted-foreground">未定价 {number(summary.unpriced_calls)} · 估算 {number(summary.estimated_calls)}</div></CardContent></Card>
       </div>
 
@@ -436,7 +437,7 @@ export function MarginAnalysis() {
 
       {section === 'models' && <Card><CardHeader><CardTitle>模型毛利排行</CardTitle><CardDescription>按毛利排序，成本为网关日志中的供应商实际/估算成本。</CardDescription></CardHeader><CardContent><BreakdownTable rows={data.models} emptyText="当前范围没有模型消费记录" /></CardContent></Card>}
       {section === 'channels' && <Card><CardHeader><CardTitle>渠道毛利排行</CardTitle><CardDescription>展示实际命中的渠道，便于发现贵渠道和未定价渠道。</CardDescription></CardHeader><CardContent><BreakdownTable rows={data.channels} emptyText="当前范围没有渠道消费记录" /></CardContent></Card>}
-      {section === 'users' && <Card><CardHeader><CardTitle>用户毛利排行</CardTitle><CardDescription>已付款、免费赠额、手工授信和内部账号分开统计。</CardDescription></CardHeader><CardContent><BreakdownTable rows={data.users} emptyText="当前范围没有用户消费记录" /></CardContent></Card>}
+      {section === 'users' && <Card><CardHeader><CardTitle>用户毛利排行</CardTitle><CardDescription>已付款（含线下结算的企业客户）、免费赠额和内部账号（管理员、面板白名单）分开统计。</CardDescription></CardHeader><CardContent><BreakdownTable rows={data.users} emptyText="当前范围没有用户消费记录" /></CardContent></Card>}
       {section === 'pricing' && (
         pricingLoading ? <div className="min-h-[260px] flex items-center justify-center text-sm text-muted-foreground">正在让 new-api 解析全部定价表达式…</div> : pricingError ? (
           <Card><CardContent className="p-8 text-center"><AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-500" /><p className="text-sm text-muted-foreground">{pricingError}</p><Button className="mt-4" variant="outline" onClick={() => { setPricingError(null); void loadPricing() }}>重试</Button></CardContent></Card>

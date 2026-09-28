@@ -58,15 +58,19 @@ type MarginSummary struct {
 	NonRevenueCostUSD     float64 `json:"non_revenue_cost_usd"`
 	GiftNominalUSD        float64 `json:"gift_nominal_usd"`
 	GiftProviderCostUSD   float64 `json:"gift_provider_cost_usd"`
-	PaidCustomerCount     int64   `json:"paid_customer_count"`
-	FreeCustomerCount     int64   `json:"free_customer_count"`
-	ManualCreditUserCount int64   `json:"manual_credit_user_count"`
-	InternalUserCount     int64   `json:"internal_user_count"`
-	NonRevenueUserCount   int64   `json:"non_revenue_user_count"`
-	UnpricedCalls         int64   `json:"unpriced_calls"`
-	EstimatedCalls        int64   `json:"estimated_calls"`
-	UnpricedCostUSD       float64 `json:"unpriced_cost_usd"`
-	ZeroQuotaCostCalls    int64   `json:"zero_quota_cost_calls"`
+	// PaidCustomerCount includes OfflinePaidCustomerCount.
+	PaidCustomerCount int64 `json:"paid_customer_count"`
+	// OfflinePaidCustomerCount is paying customers with no settled top-up
+	// row: B2B accounts that settle outside the gateway and are credited by
+	// an admin, which the gateway records in users.topup_quota.
+	OfflinePaidCustomerCount int64   `json:"offline_paid_customer_count"`
+	FreeCustomerCount        int64   `json:"free_customer_count"`
+	InternalUserCount        int64   `json:"internal_user_count"`
+	NonRevenueUserCount      int64   `json:"non_revenue_user_count"`
+	UnpricedCalls            int64   `json:"unpriced_calls"`
+	EstimatedCalls           int64   `json:"estimated_calls"`
+	UnpricedCostUSD          float64 `json:"unpriced_cost_usd"`
+	ZeroQuotaCostCalls       int64   `json:"zero_quota_cost_calls"`
 }
 
 type MarginDailyPoint struct {
@@ -161,12 +165,23 @@ type marginAccumulator struct {
 	ZeroQuotaCost    int64
 }
 
+// Margin buckets. A user lands in exactly one; buildMarginBucket decides which.
+const (
+	marginBucketPaid             = "customer_paid"      // has a settled top-up
+	marginBucketOfflinePaid      = "customer_offline"   // no top-up row, but topup_quota > 0
+	marginBucketFree             = "customer_free"      // never paid
+	marginBucketStaff            = "staff_or_root"      // role >= 10
+	marginBucketWhitelisted      = "internal_whitelist" // in the panel whitelist
+	marginBucketDeletedPaid      = "deleted_paid"
+	marginBucketDeletedNoPayment = "deleted_no_payment"
+)
+
 func isPaidMarginBucket(bucket string) bool {
-	return bucket == "customer_paid"
+	return bucket == marginBucketPaid || bucket == marginBucketOfflinePaid
 }
 
 func isInternalMarginBucket(bucket string) bool {
-	return bucket == "manual_or_test_credit" || bucket == "staff_or_root"
+	return bucket == marginBucketStaff || bucket == marginBucketWhitelisted
 }
 
 func addMarginGroup(acc *marginAccumulator, row marginGroupRow, state marginUserState, giftQuota, giftCost float64) {
@@ -189,7 +204,7 @@ func addMarginGroup(acc *marginAccumulator, row marginGroupRow, state marginUser
 		acc.GiftNominalQuota += giftQuota
 		return
 	}
-	if state.Bucket == "deleted_paid" {
+	if state.Bucket == marginBucketDeletedPaid {
 		// A deleted account with a successful payment is not safe evidence of
 		// revenue: this is the bucket used for chargeback/black-card cleanup.
 		// Keep every supplier bill, but recognize no customer revenue.
@@ -230,23 +245,46 @@ func (a marginAccumulator) merge(other marginAccumulator) marginAccumulator {
 	return a
 }
 
-func buildMarginBucket(role int64, found bool, paid bool, topUpQuota int64) string {
+// buildMarginBucket classifies one user. Internal accounts are decided first
+// (role, then the panel whitelist), so an admin or a whitelisted test account
+// never counts as a customer however much credit it holds.
+//
+// topUpQuota is users.topup_quota, the gateway's lifetime credited amount. It
+// grows with paid top-ups and with admin grants (CreditAdminGrantedQuota) —
+// the way B2B customers who settle outside the gateway are credited — but not
+// with redemption codes or signup gifts. So topup_quota > 0 with no top-up row
+// is an offline-settled customer, not internal cost.
+func buildMarginBucket(role int64, found, paid bool, topUpQuota int64, whitelisted bool) string {
 	if !found {
 		if paid {
-			return "deleted_paid"
+			return marginBucketDeletedPaid
 		}
-		return "deleted_no_payment"
+		return marginBucketDeletedNoPayment
 	}
 	if role >= 10 {
-		return "staff_or_root"
+		return marginBucketStaff
+	}
+	if whitelisted {
+		return marginBucketWhitelisted
 	}
 	if paid {
-		return "customer_paid"
+		return marginBucketPaid
 	}
 	if topUpQuota > 0 {
-		return "manual_or_test_credit"
+		return marginBucketOfflinePaid
 	}
-	return "customer_free"
+	return marginBucketFree
+}
+
+// marginWhitelistedUsers is the panel whitelist's explicit user IDs. Admins
+// the whitelist also hides are already internal by role.
+func marginWhitelistedUsers() map[int64]bool {
+	ids := GetPanelWhitelistConfig().UserIDs
+	set := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
 }
 
 func clampGiftQuota(grantQuota, beforeQuota, periodQuota float64) float64 {
@@ -514,6 +552,8 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 		return nil, err
 	}
 
+	whitelisted := marginWhitelistedUsers()
+
 	states := make(map[int64]marginUserState, len(ids))
 	for _, row := range rows {
 		state, ok := states[row.UserID]
@@ -522,7 +562,7 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 			state = marginUserState{
 				UserID:      row.UserID,
 				Username:    row.Username,
-				Bucket:      buildMarginBucket(user.Role, found, paidUsers[row.UserID], user.TopUpQuota),
+				Bucket:      buildMarginBucket(user.Role, found, paidUsers[row.UserID], user.TopUpQuota, whitelisted[row.UserID]),
 				BeforeQuota: beforeQuota[row.UserID],
 				GrantQuota:  giftQuotas[row.UserID],
 			}
@@ -623,30 +663,30 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 		QuotaPerUnit: util.TokensPerUSD,
 		Currency:     "USD",
 		Summary: MarginSummary{
-			Requests:              total.Requests,
-			BilledUSD:             marginMoney(total.BilledQuota),
-			FreeUserBilledUSD:     marginMoney(total.FreeBilledQuota),
-			RealizedRevenueUSD:    paidRevenue,
-			ProviderCostUSD:       providerCost,
-			GrossProfitUSD:        grossProfit,
-			GrossMarginPercent:    marginPercent(grossProfit, paidRevenue),
-			ExternalProfitUSD:     paidRevenue - paidTrafficCost - giftFreeCost - nonRevenueCost,
-			ExternalMarginPercent: marginPercent(paidRevenue-paidTrafficCost-giftFreeCost-nonRevenueCost, paidRevenue),
-			PaidTrafficCostUSD:    paidTrafficCost,
-			GiftAndFreeCostUSD:    giftFreeCost,
-			InternalCostUSD:       internalCost,
-			NonRevenueCostUSD:     nonRevenueCost,
-			GiftNominalUSD:        marginMoney(total.GiftNominalQuota),
-			GiftProviderCostUSD:   marginMoney(total.GiftProviderCost),
-			PaidCustomerCount:     countMarginBuckets(states, "customer_paid"),
-			FreeCustomerCount:     countMarginBuckets(states, "customer_free", "deleted_no_payment"),
-			ManualCreditUserCount: countMarginBuckets(states, "manual_or_test_credit"),
-			InternalUserCount:     countMarginBuckets(states, "staff_or_root"),
-			NonRevenueUserCount:   countMarginBuckets(states, "deleted_paid"),
-			UnpricedCalls:         total.UnpricedCalls,
-			EstimatedCalls:        total.EstimatedCalls,
-			UnpricedCostUSD:       marginMoney(total.UnpricedCost),
-			ZeroQuotaCostCalls:    total.ZeroQuotaCost,
+			Requests:                 total.Requests,
+			BilledUSD:                marginMoney(total.BilledQuota),
+			FreeUserBilledUSD:        marginMoney(total.FreeBilledQuota),
+			RealizedRevenueUSD:       paidRevenue,
+			ProviderCostUSD:          providerCost,
+			GrossProfitUSD:           grossProfit,
+			GrossMarginPercent:       marginPercent(grossProfit, paidRevenue),
+			ExternalProfitUSD:        paidRevenue - paidTrafficCost - giftFreeCost - nonRevenueCost,
+			ExternalMarginPercent:    marginPercent(paidRevenue-paidTrafficCost-giftFreeCost-nonRevenueCost, paidRevenue),
+			PaidTrafficCostUSD:       paidTrafficCost,
+			GiftAndFreeCostUSD:       giftFreeCost,
+			InternalCostUSD:          internalCost,
+			NonRevenueCostUSD:        nonRevenueCost,
+			GiftNominalUSD:           marginMoney(total.GiftNominalQuota),
+			GiftProviderCostUSD:      marginMoney(total.GiftProviderCost),
+			PaidCustomerCount:        countMarginBuckets(states, marginBucketPaid, marginBucketOfflinePaid),
+			OfflinePaidCustomerCount: countMarginBuckets(states, marginBucketOfflinePaid),
+			FreeCustomerCount:        countMarginBuckets(states, marginBucketFree, marginBucketDeletedNoPayment),
+			InternalUserCount:        countMarginBuckets(states, marginBucketStaff, marginBucketWhitelisted),
+			NonRevenueUserCount:      countMarginBuckets(states, marginBucketDeletedPaid),
+			UnpricedCalls:            total.UnpricedCalls,
+			EstimatedCalls:           total.EstimatedCalls,
+			UnpricedCostUSD:          marginMoney(total.UnpricedCost),
+			ZeroQuotaCostCalls:       total.ZeroQuotaCost,
 		},
 		Daily:    buildMarginDaily(daily, params.StartTime, params.EndTime),
 		Models:   buildMarginBreakdowns(models, modelNames, nil, params.Limit),
@@ -656,7 +696,8 @@ func (s *MarginAnalysisService) buildMarginResult(params MarginAnalysisParams, r
 			"收入按已结算消费日志计算，未使用的充值余额不计入。",
 			"注册赠额从收入中剔除；赠额与免费账号产生的供应商成本仍计入。",
 			"unpriced 成本不会被当成免费，需结合供应商账单继续对账。",
-			"管理员、测试和手工授信账号单独列为内部成本；已删除/拒付账号不自动视为现金收入，但供应商成本全额计入不可回收成本。",
+			"付费客户 = 有成功充值单，或网关记有终身到账（topup_quota > 0，管理员给线下结算的企业客户加余额时计入）。测试号若被管理员加过余额，请加进面板白名单，否则会按付费客户计收入。",
+			"管理员（role ≥ 10）和面板白名单里的账号计为内部成本；已删除/拒付账号不自动视为现金收入，但供应商成本全额计入不可回收成本。",
 		},
 	}
 	return result, nil
