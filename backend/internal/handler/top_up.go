@@ -61,6 +61,7 @@ func ListTopUps(c *gin.Context) {
 		Username:        c.Query("username"),
 		StartDate:       c.Query("start_date"),
 		EndDate:         c.Query("end_date"),
+		Currency:        c.Query("currency"),
 	}
 
 	// Parse optional user_id
@@ -203,6 +204,7 @@ func ExportTopUps(c *gin.Context) {
 		Username:        c.Query("username"),
 		StartDate:       c.Query("start_date"),
 		EndDate:         c.Query("end_date"),
+		Currency:        c.Query("currency"),
 	}
 	if userIDStr := c.Query("user_id"); userIDStr != "" {
 		if uid, err := strconv.ParseInt(userIDStr, 10, 64); err == nil {
@@ -238,10 +240,10 @@ func ExportTopUps(c *gin.Context) {
 	subject, _ := c.Get("user_sub")
 	method, _ := c.Get("auth_method")
 	log.Printf(
-		"audit top_ups_export user=%v auth=%v rows=%d filters={status:%q payment:%q provider:%q trade_no:%q username:%q user_id:%v start:%q end:%q} ip=%s",
+		"audit top_ups_export user=%v auth=%v rows=%d filters={status:%q payment:%q provider:%q trade_no:%q username:%q user_id:%v start:%q end:%q currency:%q} ip=%s",
 		subject, method, total,
 		params.Status, params.PaymentMethod, params.PaymentProvider, params.TradeNo, params.Username, params.UserID,
-		params.StartDate, params.EndDate, c.ClientIP(),
+		params.StartDate, params.EndDate, params.Currency, c.ClientIP(),
 	)
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)

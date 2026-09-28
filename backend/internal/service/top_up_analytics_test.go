@@ -134,13 +134,14 @@ func TestGetTopUpTopUsers_QualifiesStatusWhenJoiningUsers(t *testing.T) {
 	if got[0].UserID != 1 || got[0].Username != "alice" {
 		t.Fatalf("unexpected top user: %#v", got[0])
 	}
-	if got[0].Count != 2 || got[0].Money != 30 || got[0].Amount != 150 {
+	// Method-only Stripe rows: paid USD is money, and so is the credit.
+	if got[0].Count != 2 || got[0].PaidUSD != 30 || got[0].CreditedUSD != 30 {
 		t.Fatalf("unexpected aggregate: %#v", got[0])
 	}
 	if got[1].UserID != 99 || got[1].Username != "99" {
 		t.Fatalf("expected missing user to fall back to user id, got %#v", got[1])
 	}
-	if got[1].Count != 1 || got[1].Money != 5 || got[1].Amount != 10 {
+	if got[1].Count != 1 || got[1].PaidUSD != 5 || got[1].CreditedUSD != 5 {
 		t.Fatalf("unexpected fallback-user aggregate: %#v", got[1])
 	}
 }
@@ -163,7 +164,7 @@ func TestSuccessStatusCondition_QualifiesAndTrimsStatus(t *testing.T) {
 }
 
 func TestTopUpHeatmapTimeExpressions_PostgresCastsDayBucketBeforeModulo(t *testing.T) {
-	_, dowExpr := topUpHeatmapTimeExpressions(28800, true)
+	_, dowExpr := topUpHeatmapTimeExpressions(28800, true, "paid_at")
 	for _, frag := range []string{"CAST(FLOOR", "AS BIGINT", "% 7"} {
 		if !strings.Contains(dowExpr, frag) {
 			t.Fatalf("PostgreSQL DOW expression missing %q: %s", frag, dowExpr)
@@ -213,7 +214,9 @@ func TestGetTopUpPayerCohorts_UsersCreatedAtIsOptional(t *testing.T) {
 			user_id INTEGER,
 			amount INTEGER,
 			money REAL,
+			payment_method TEXT,
 			create_time INTEGER,
+			complete_time INTEGER,
 			status TEXT
 		);
 	`)
@@ -221,12 +224,13 @@ func TestGetTopUpPayerCohorts_UsersCreatedAtIsOptional(t *testing.T) {
 	now := time.Now().Unix()
 	old := now - 60*86400
 	db.MustExec(`INSERT INTO users (id, username, status) VALUES (1, 'alice', 1), (2, 'bob', 1)`)
-	db.MustExec(`INSERT INTO top_ups (id, user_id, amount, money, create_time, status) VALUES
-		(1, 1, 100, 10, ?, 'success'),
-		(2, 1, 200, 20, ?, ' Completed '),
-		(3, 2, 300, 30, ?, 'success'),
-		(4, 2, 400, 5, ?, 'success'),
-		(5, 99, 500, 7, ?, '1')`,
+	// complete_time is NULL throughout: paid time falls back to create_time.
+	db.MustExec(`INSERT INTO top_ups (id, user_id, amount, money, payment_method, create_time, status) VALUES
+		(1, 1, 100, 10, 'stripe', ?, 'success'),
+		(2, 1, 200, 20, 'stripe', ?, ' Completed '),
+		(3, 2, 300, 30, 'stripe', ?, 'success'),
+		(4, 2, 400, 35, 'alipay', ?, 'success'),
+		(5, 99, 500, 7, 'wxpay', ?, '1')`,
 		now-5*86400,
 		now-4*86400,
 		old,
@@ -247,8 +251,9 @@ func TestGetTopUpPayerCohorts_UsersCreatedAtIsOptional(t *testing.T) {
 	if got.RepeatPayers != 1 {
 		t.Fatalf("repeat payers = %d, want 1", got.RepeatPayers)
 	}
-	if got.TotalRevenue != 42 {
-		t.Fatalf("total revenue = %v, want 42", got.TotalRevenue)
+	// $10 + $20 + ¥35 ($5) + ¥7 ($1); the $30 order is outside the window.
+	if got.TotalRevenue != 36 {
+		t.Fatalf("total revenue = %v, want 36", got.TotalRevenue)
 	}
 	if got.AvgFirstPayDelayHours != 0 {
 		t.Fatalf("missing users.created_at should disable first-pay delay, got %v", got.AvgFirstPayDelayHours)

@@ -32,6 +32,16 @@ The source of truth is this repository, `fengshao1227/new_api_tools`; production
 - Aggregate cards and per-user income summaries use normalized USD fields.
 - The table contains a dedicated email column and recognizes Dodo, PayPal and Creem labels.
 
+> Superseded on 2026-09-28 (Beat edition, currency pass): the rules now live in one place,
+> `backend/internal/service/top_up_currency.go`, shared by every top-up page, the CSV exports,
+> the affiliate stats and the growth panel. `amount_usd` / `money_usd` were replaced by
+> `credited_usd` / `paid_usd` (`null` when the currency is unknown). The BeatAPI-migrated rows
+> (`payment_provider = 'beatapi'`) take their currency from the method; rows no rule recognises
+> are counted and listed apart and never enter a USD total (previously they were counted as USD).
+> Stripe credit is `money`; revenue is attributed to the paid time (`complete_time`, falling back
+> to `create_time`) on the analytics tab, as on the growth panel. `reviewing` (Stripe fraud hold)
+> is its own status bucket, and subscription rows (amount 0) are no longer flagged as anomalies.
+
 ## Validation
 
 - `cd backend && go test ./...` passes.

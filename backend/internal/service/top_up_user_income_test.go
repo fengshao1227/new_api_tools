@@ -45,9 +45,9 @@ func seedUserIncomeTables(t *testing.T) {
 	// 2 成功 + 1 待支付 + 1 已过期（未成功 = pending + expired）
 	db.MustExec(`INSERT INTO top_ups (id, user_id, amount, money, trade_no, payment_method, create_time, complete_time, status) VALUES
 		(1, 42, 10, 70.00, 'T1', 'alipay', 1000, 1100, 'success'),
-		(2, 42, 20, 140.00, 'T2', 'wechat', 2000, 2100, 'success'),
+		(2, 42, 20, 140.00, 'T2', 'wxpay', 2000, 2100, 'success'),
 		(3, 42, 5, 35.00, 'T3', 'alipay', 3000, 0, 'pending'),
-		(4, 42, 8, 50.00, 'T4', 'wechat', 4000, 0, 'expired')`)
+		(4, 42, 7, 49.00, 'T4', 'wxpay', 4000, 0, 'expired')`)
 	// 兑换码：配额 500000 = $1
 	db.MustExec(`INSERT INTO redemptions (id, user_id, "key", name, quota, created_time, redeemed_time, used_user_id, deleted_at, expired_time) VALUES
 		(1, 1, 'CODEAAA', '拉新', 500000, 900, 2500, 42, NULL, 0),
@@ -70,14 +70,15 @@ func TestGetUserQuotaIncomeSummary(t *testing.T) {
 	if sum.PaidAmount != 30 {
 		t.Errorf("paid_amount=%v want 30", sum.PaidAmount)
 	}
-	if sum.PaidMoney != 210 {
-		t.Errorf("paid_money=%v want 210", sum.PaidMoney)
+	// ¥70 + ¥140 at ¥7/$ = $30; the raw yuan are reported apart, never summed as dollars.
+	if sum.PaidMoneyUSD != 30 || sum.PaidCNYMoney != 210 || sum.PaidUSDMoney != 0 {
+		t.Errorf("paid usd/cny/usd = %v/%v/%v want 30/210/0", sum.PaidMoneyUSD, sum.PaidCNYMoney, sum.PaidUSDMoney)
 	}
 	if sum.UnsuccessCount != 2 {
 		t.Errorf("unsuccess_count=%d want 2 (pending+expired)", sum.UnsuccessCount)
 	}
-	if sum.UnsuccessMoney != 85 {
-		t.Errorf("unsuccess_money=%v want 85 (35+50)", sum.UnsuccessMoney)
+	if sum.UnsuccessMoneyUSD != 12 {
+		t.Errorf("unsuccess_money_usd=%v want 12 (¥35+¥49 at ¥7/$)", sum.UnsuccessMoneyUSD)
 	}
 	if sum.RedemptionCount != 2 {
 		t.Errorf("redemption_count=%d want 2", sum.RedemptionCount)
@@ -123,6 +124,15 @@ func TestExportUserIncomeCSV_MarksRedemptions(t *testing.T) {
 	// 成功充值应计入实付
 	if !strings.Contains(out, "是") {
 		t.Errorf("expected 计入实付=是 for success top-ups")
+	}
+	// 底部汇总用折美元，不再把人民币当美元相加。
+	for _, line := range []string{"实付合计(折合美元),30.00", "其中人民币原币(CNY),210.00", "未成功金额(折合美元),12.00", "在线充值入账额度(美元),30.00"} {
+		if !strings.Contains(out, line) {
+			t.Errorf("footer missing %q:\n%s", line, out)
+		}
+	}
+	if strings.Contains(out, "实付金额(CNY)") {
+		t.Errorf("footer/header must not label every amount CNY")
 	}
 }
 

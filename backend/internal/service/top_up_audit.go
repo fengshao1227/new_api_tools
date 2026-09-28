@@ -28,17 +28,21 @@ type TopUpPayerCohorts struct {
 }
 
 type TopUpProviderHealth struct {
-	Provider          string  `json:"provider"`
-	Method            string  `json:"method"`
-	TotalCount        int64   `json:"total_count"`
-	SuccessCount      int64   `json:"success_count"`
-	PendingCount      int64   `json:"pending_count"`
-	FailedCount       int64   `json:"failed_count"`
-	ExpiredCount      int64   `json:"expired_count"`
-	UnknownCount      int64   `json:"unknown_count"`
-	SuccessRate       float64 `json:"success_rate"`
-	FailureRate       float64 `json:"failure_rate"`
-	ExpiredRate       float64 `json:"expired_rate"`
+	Provider       string  `json:"provider"`
+	Method         string  `json:"method"`
+	TotalCount     int64   `json:"total_count"`
+	SuccessCount   int64   `json:"success_count"`
+	PendingCount   int64   `json:"pending_count"`
+	FailedCount    int64   `json:"failed_count"`
+	ExpiredCount   int64   `json:"expired_count"`
+	ReviewingCount int64   `json:"reviewing_count"`
+	UnknownCount   int64   `json:"unknown_count"`
+	SuccessRate    float64 `json:"success_rate"`
+	FailureRate    float64 `json:"failure_rate"`
+	ExpiredRate    float64 `json:"expired_rate"`
+	// Currency 该渠道 × 方式的原币种（CNY / USD）；空串 = 币种未知，Revenue 恒为 0。
+	Currency string `json:"currency"`
+	// Revenue 成功订单实付折美元。
 	Revenue           float64 `json:"revenue"`
 	AvgCompletionSecs float64 `json:"avg_completion_secs"`
 	P95CompletionSecs float64 `json:"p95_completion_secs"`
@@ -110,26 +114,27 @@ func GetTopUpPayerCohorts(days int) (*TopUpPayerCohorts, error) {
 		userCreatedSelect = "COALESCE(MAX(u.created_at), 0) as user_created_at"
 		userJoin = "LEFT JOIN users u ON w.user_id = u.id"
 	}
+	// Paying users of the window are those with an order *paid* in it; revenue
+	// is paid USD; a first-time payer is one whose first paid order is in it.
 	query := db.RebindQuery(fmt.Sprintf(`
 		SELECT w.user_id,
 			%s,
-			COALESCE(MIN(CASE WHEN COALESCE(all_t.create_time, 0) > 0 THEN all_t.create_time END), 0) as first_success,
+			COALESCE(MIN(CASE WHEN all_t.paid_at > 0 THEN all_t.paid_at END), 0) as first_success,
 			w.window_count,
 			w.window_money
 		FROM (
-			SELECT t.user_id,
+			SELECT f.user_id,
 				COUNT(*) as window_count,
-				COALESCE(SUM(COALESCE(t.money, 0)), 0) as window_money
-			FROM top_ups t
-			WHERE t.create_time >= ?
-				AND (%s) = 'success'
-				AND t.user_id > 0
-			GROUP BY t.user_id
+				COALESCE(SUM(f.paid_usd), 0) as window_money
+			FROM %s
+			WHERE f.paid_at >= ? AND f.user_id > 0
+			GROUP BY f.user_id
 		) w
-		LEFT JOIN top_ups all_t ON all_t.user_id = w.user_id AND (%s) = 'success'
+		LEFT JOIN (SELECT user_id, %s AS paid_at FROM top_ups WHERE %s) all_t ON all_t.user_id = w.user_id
 		%s
 		GROUP BY w.user_id, w.window_count, w.window_money`,
-		userCreatedSelect, topUpStatusBucketSQL("t.status"), topUpStatusBucketSQL("all_t.status"), userJoin))
+		userCreatedSelect, topUpFactsSQL(successStatusCondition(), "f"),
+		topUpPaidAtSQL(""), successStatusCondition(), userJoin))
 
 	rows, err := db.QueryWithTimeout(15*time.Second, query, startTime)
 	if err != nil {
@@ -266,9 +271,10 @@ func buildTopUpAnomalySQLFilters(statusBucketSQL string, now int64, pendingHours
 		pending24h:           pendingOlderThan(24 * 3600),
 		completeBeforeCreate: "COALESCE(t.create_time, 0) > 0 AND COALESCE(t.complete_time, 0) > 0 AND t.complete_time < t.create_time",
 		invalidMoney:         "COALESCE(t.money, 0) <= 0",
-		invalidAmount:        "COALESCE(t.amount, 0) <= 0",
-		emptyTradeNo:         "TRIM(COALESCE(t.trade_no, '')) = ''",
-		unknownStatus:        fmt.Sprintf("(%s) = 'unknown'", statusBucketSQL),
+		// 订阅购买镜像行 amount 恒为 0，不算额度异常。
+		invalidAmount: fmt.Sprintf("(COALESCE(t.amount, 0) <= 0 AND NOT %s)", topUpSubscriptionSQL("t")),
+		emptyTradeNo:  "TRIM(COALESCE(t.trade_no, '')) = ''",
+		unknownStatus: fmt.Sprintf("(%s) = 'unknown'", statusBucketSQL),
 	}
 	filters.any = "(" + strings.Join([]string{
 		filters.overduePending,
@@ -281,6 +287,8 @@ func buildTopUpAnomalySQLFilters(statusBucketSQL string, now int64, pendingHours
 	return filters
 }
 
+// GetTopUpProviderHealth reports each provider × method pair's outcome mix and
+// revenue (paid USD) over the window's orders, windowed by event time.
 func GetTopUpProviderHealth(days int) ([]TopUpProviderHealth, error) {
 	days = normalizeTopUpDays(days, 30, 365)
 
@@ -293,7 +301,6 @@ func GetTopUpProviderHealth(days int) ([]TopUpProviderHealth, error) {
 
 	db := database.Get()
 	startTime := time.Now().AddDate(0, 0, -days).Unix()
-	paymentProviderExpr := topUpPaymentProviderExpr("")
 	query := db.RebindQuery(fmt.Sprintf(`
 		SELECT COALESCE(%s, '') as payment_provider,
 			COALESCE(payment_method, '') as payment_method,
@@ -302,7 +309,7 @@ func GetTopUpProviderHealth(days int) ([]TopUpProviderHealth, error) {
 			COALESCE(create_time, 0) as create_time,
 			COALESCE(complete_time, 0) as complete_time
 		FROM top_ups
-		WHERE create_time >= ?`, paymentProviderExpr))
+		WHERE %s >= ?`, topUpPaymentProviderExpr(""), topUpEventTimeSQL("")))
 
 	rows, err := db.QueryWithTimeout(15*time.Second, query, startTime)
 	if err != nil {
@@ -311,68 +318,12 @@ func GetTopUpProviderHealth(days int) ([]TopUpProviderHealth, error) {
 
 	groups := map[string]*providerAgg{}
 	for _, row := range rows {
-		provider := strings.TrimSpace(fmt.Sprintf("%v", row["payment_provider"]))
-		method := strings.TrimSpace(fmt.Sprintf("%v", row["payment_method"]))
-		if provider == "" || provider == "<nil>" {
-			provider = "未知"
-		}
-		if method == "" || method == "<nil>" {
-			method = "未知"
-		}
-		key := provider + "\x00" + method
-		agg := groups[key]
-		if agg == nil {
-			agg = &providerAgg{health: TopUpProviderHealth{Provider: provider, Method: method}}
-			groups[key] = agg
-		}
-
-		status := topUpStatusBucket(fmt.Sprintf("%v", row["status"]))
-		money := toFloat64(row["money"])
-		createTime := toInt64(row["create_time"])
-		completeTime := toInt64(row["complete_time"])
-
-		agg.health.TotalCount++
-		switch status {
-		case "success":
-			agg.health.SuccessCount++
-			agg.health.Revenue += money
-			if dur := topUpCompletionSeconds(createTime, completeTime); dur > 0 {
-				agg.durations = append(agg.durations, dur)
-				agg.durationSum += dur
-			}
-		case "failed":
-			agg.health.FailedCount++
-		case "expired":
-			agg.health.ExpiredCount++
-		case "pending":
-			agg.health.PendingCount++
-		default:
-			agg.health.UnknownCount++
-		}
+		accumulateProviderHealth(groups, row)
 	}
 
 	result := make([]TopUpProviderHealth, 0, len(groups))
 	for _, agg := range groups {
-		h := agg.health
-		if h.TotalCount > 0 {
-			h.SuccessRate = round4(float64(h.SuccessCount) / float64(h.TotalCount))
-			h.FailureRate = round4(float64(h.FailedCount) / float64(h.TotalCount))
-			h.ExpiredRate = round4(float64(h.ExpiredCount) / float64(h.TotalCount))
-		}
-		if len(agg.durations) > 0 {
-			sort.Slice(agg.durations, func(i, j int) bool { return agg.durations[i] < agg.durations[j] })
-			h.AvgCompletionSecs = round2(float64(agg.durationSum) / float64(len(agg.durations)))
-			idx := int(math.Ceil(float64(len(agg.durations))*0.95)) - 1
-			if idx < 0 {
-				idx = 0
-			}
-			if idx >= len(agg.durations) {
-				idx = len(agg.durations) - 1
-			}
-			h.P95CompletionSecs = float64(agg.durations[idx])
-		}
-		h.Revenue = round2(h.Revenue)
-		result = append(result, h)
+		result = append(result, agg.finalize())
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -384,6 +335,77 @@ func GetTopUpProviderHealth(days int) ([]TopUpProviderHealth, error) {
 
 	cm.Set(cacheKey, result, 5*time.Minute)
 	return result, nil
+}
+
+func providerHealthText(v interface{}) string {
+	s := strings.TrimSpace(fmt.Sprintf("%v", v))
+	if s == "<nil>" {
+		return ""
+	}
+	return s
+}
+
+func accumulateProviderHealth(groups map[string]*providerAgg, row map[string]interface{}) {
+	rawProvider := providerHealthText(row["payment_provider"])
+	rawMethod := providerHealthText(row["payment_method"])
+	provider, method := rawProvider, rawMethod
+	if provider == "" {
+		provider = "未知"
+	}
+	if method == "" {
+		method = "未知"
+	}
+	key := provider + "\x00" + method
+	agg := groups[key]
+	if agg == nil {
+		// The currency is a function of provider and method, so it is constant
+		// across the group.
+		agg = &providerAgg{health: TopUpProviderHealth{
+			Provider: provider, Method: method, Currency: topUpCurrencyOf(rawProvider, rawMethod),
+		}}
+		groups[key] = agg
+	}
+
+	agg.health.TotalCount++
+	switch topUpStatusBucket(fmt.Sprintf("%v", row["status"])) {
+	case "success":
+		agg.health.SuccessCount++
+		if usd, ok := topUpPaidUSDOf(agg.health.Currency, toFloat64(row["money"])); ok {
+			agg.health.Revenue += usd
+		}
+		if dur := topUpCompletionSeconds(toInt64(row["create_time"]), toInt64(row["complete_time"])); dur > 0 {
+			agg.durations = append(agg.durations, dur)
+			agg.durationSum += dur
+		}
+	case "failed":
+		agg.health.FailedCount++
+	case "expired":
+		agg.health.ExpiredCount++
+	case "pending":
+		agg.health.PendingCount++
+	case "reviewing":
+		agg.health.ReviewingCount++
+	default:
+		agg.health.UnknownCount++
+	}
+}
+
+func (agg *providerAgg) finalize() TopUpProviderHealth {
+	h := agg.health
+	if h.TotalCount > 0 {
+		h.SuccessRate = round4(float64(h.SuccessCount) / float64(h.TotalCount))
+		h.FailureRate = round4(float64(h.FailedCount) / float64(h.TotalCount))
+		h.ExpiredRate = round4(float64(h.ExpiredCount) / float64(h.TotalCount))
+	}
+	if len(agg.durations) > 0 {
+		sort.Slice(agg.durations, func(i, j int) bool { return agg.durations[i] < agg.durations[j] })
+		h.AvgCompletionSecs = round2(float64(agg.durationSum) / float64(len(agg.durations)))
+		idx := int(math.Ceil(float64(len(agg.durations))*0.95)) - 1
+		idx = max(0, min(idx, len(agg.durations)-1))
+		h.P95CompletionSecs = float64(agg.durations[idx])
+	}
+	h.Revenue = round2(h.Revenue)
+	return h
 }
 
 func GetTopUpAnomalies(days int, pendingHours int, limit int) (*TopUpAnomalies, error) {

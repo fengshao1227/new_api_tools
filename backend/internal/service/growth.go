@@ -40,13 +40,11 @@ const topUpSettledStatus = "success"
 // where $70 came in, because every settled order is the same $10 purchase paid
 // on a different rail.
 //
-// The rail is the only evidence in the row, and it is sufficient: epay is the
-// CNY gateway, and alipay/wxpay are its methods (the orders imported from the
-// portal carry the method without the provider). Everything else is a card
-// processor quoting USD. An unrecognised rail is counted as USD rather than
-// dropped: a new card processor is the likely case, and under-reporting a rail
-// that does exist is worse than the rounding.
-const cnyRailPredicate = "(payment_method IN ('alipay', 'wxpay') OR payment_provider = 'epay')"
+// The rail is the only evidence in the row. The rules that read it live in
+// top_up_currency.go and are shared with the top-up pages, so this panel and
+// the top-up analytics report the same revenue for the same window. A row
+// whose rail matches no rule has no USD value and stays out of the sum; the
+// top-up pages count and list those rows instead of guessing their currency.
 
 // defaultCNYPerUSD matches what this deployment charges: NewAPI's own `Price`
 // option is 7, and every settled CNY order is ¥70 against a $10 product. Set
@@ -66,10 +64,11 @@ func cnyPerUSD() float64 {
 	return rate
 }
 
-// revenueUSDExpr converts a row's `money` to USD. Built with a parsed float, so
-// the rate cannot carry anything but a number into the statement.
+// revenueUSDExpr converts a row's `money` to USD (NULL for an unknown
+// currency). Built with a parsed float, so the rate cannot carry anything but a
+// number into the statement.
 func revenueUSDExpr() string {
-	return fmt.Sprintf("(CASE WHEN %s THEN money / %g ELSE money END)", cnyRailPredicate, cnyPerUSD())
+	return topUpPaidUSDSQL("")
 }
 
 // paidAtExpr is when a top-up actually settled. complete_time is the settlement
@@ -77,7 +76,7 @@ func revenueUSDExpr() string {
 // ones — can carry 0, and a zero would bucket every one of them into 1970 and
 // silently drop them out of every window. create_time is the honest fallback:
 // for a settled row the two are minutes apart.
-const paidAtExpr = "(CASE WHEN complete_time IS NULL OR complete_time = 0 THEN create_time ELSE complete_time END)"
+var paidAtExpr = topUpPaidAtSQL("")
 
 // dayBucket groups a unix column into local calendar days with integer
 // arithmetic, so it needs no dialect-specific date function and behaves the
@@ -139,7 +138,7 @@ func (s *DashboardService) GetGrowthMetrics(noCache bool) (map[string]interface{
 			COALESCE(SUM(CASE WHEN %s THEN money ELSE 0 END), 0) AS total_revenue_cny,
 			COUNT(*) AS settled_orders
 		FROM top_ups
-		WHERE %s`, paidAtExpr, usd, paidAtExpr, usd, cnyRailPredicate, successStatusCondition()))
+		WHERE %s`, paidAtExpr, usd, paidAtExpr, usd, topUpCNYPredicateSQL(""), successStatusCondition()))
 	if row, err := s.db.QueryOneWithTimeout(15*time.Second, payQuery, monthStart, monthStart); err == nil && row != nil {
 		result["total_payers"] = toFloat64(row["total_payers"])
 		result["month_payers"] = toFloat64(row["month_payers"])
