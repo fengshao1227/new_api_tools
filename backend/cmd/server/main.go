@@ -100,9 +100,6 @@ func main() {
 
 		// Phase 2.6: Task Logs (任务日志 + 使用日志关联)
 		handler.RegisterTaskLogRoutes(api)
-
-		// Phase 3: LinuxDo Lookup
-		handler.RegisterLinuxDoRoutes(api)
 	}
 
 	// ========== 7. Background tasks ==========

@@ -18,6 +18,7 @@ import {
   Send,
   Key,
   Shield,
+  Globe,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
@@ -55,15 +56,43 @@ interface GroupInfo {
   user_count: number
 }
 
-// 注册来源标签
-const SOURCE_LABELS: Record<string, { label: string; icon: typeof Github }> = {
-  github: { label: 'GitHub', icon: Github },
-  wechat: { label: '微信', icon: MessageCircle },
-  telegram: { label: 'Telegram', icon: Send },
-  discord: { label: 'Discord', icon: MessageCircle },
-  oidc: { label: 'OIDC', icon: Shield },
-  linux_do: { label: 'LinuxDO', icon: Users },
-  password: { label: '密码注册', icon: Key },
+// 登录方式：内置 OAuth 列 + 控制台配置的 OAuth 提供方（user_oauth_bindings 的 slug）+ 密码
+interface LoginSourceOption {
+  key: string
+  label: string
+  kind: 'builtin' | 'custom' | 'password'
+}
+
+const DEFAULT_LOGIN_SOURCES: LoginSourceOption[] = [
+  { key: 'github', label: 'GitHub', kind: 'builtin' },
+  { key: 'google', label: 'Google', kind: 'custom' },
+  { key: 'password', label: '密码注册', kind: 'password' },
+]
+
+const LOGIN_SOURCE_ICONS: Record<string, typeof Github> = {
+  github: Github,
+  google: Globe,
+  wechat: MessageCircle,
+  telegram: Send,
+  discord: MessageCircle,
+  oidc: Shield,
+  password: Key,
+}
+
+// 网关 risk_events 的结论：open=待审（赠额扣住中），其余为最近一次人工处理
+interface UserRisk {
+  status: 'open' | 'confirmed' | 'released' | 'withheld' | 'dismissed' | 'none' | string
+  open_cases?: number
+  held_usd?: number
+  resolved_at?: number
+}
+
+const RISK_LABELS: Record<string, { label: string; variant: 'warning' | 'destructive' | 'success' | 'secondary' | 'outline'; hint: string }> = {
+  open: { label: '待审', variant: 'warning', hint: '网关风控待人工审核，赠额扣住中' },
+  confirmed: { label: '确认滥用', variant: 'destructive', hint: '人工确认滥用（已封禁）' },
+  released: { label: '已放行', variant: 'success', hint: '人工放行，扣住的赠额已退回' },
+  withheld: { label: '赠额扣留', variant: 'secondary', hint: '真人多开：不封号，赠额不发' },
+  dismissed: { label: '已忽略', variant: 'outline', hint: '非滥用，且不再评估该账号' },
 }
 
 interface UserInfo {
@@ -79,8 +108,16 @@ interface UserInfo {
   group: string | null
   last_request_time: number | null
   activity_level: string
-  linux_do_id: string | null
   source?: string
+  login_sources?: string[]
+  paid?: boolean
+  paid_via?: 'top_up' | 'credited' | ''
+  free_credit_usd?: number
+  signup_country?: string
+  grant_region?: string
+  granted_quota?: number
+  topup_quota?: number
+  risk?: UserRisk | null
 }
 
 export function UserManagement() {
@@ -118,9 +155,7 @@ export function UserManagement() {
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const [groupFilter, setGroupFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
-
-  // Linux.do 用户名查询状态
-  const [linuxDoLookupLoading, setLinuxDoLookupLoading] = useState<string | null>(null)
+  const [loginSources, setLoginSources] = useState<LoginSourceOption[]>(DEFAULT_LOGIN_SOURCES)
 
   const apiUrl = import.meta.env.VITE_API_URL || ''
 
@@ -157,6 +192,19 @@ export function UserManagement() {
       }
     } catch (error) {
       console.error('Failed to fetch groups:', error)
+    }
+  }, [apiUrl, getAuthHeaders])
+
+  // 登录方式筛选项（网关实际存在的 OAuth 列与控制台提供方）
+  const fetchLoginSources = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiUrl}/api/users/login-sources`, { headers: getAuthHeaders() })
+      const data = await response.json()
+      if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+        setLoginSources(data.data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch login sources:', error)
     }
   }, [apiUrl, getAuthHeaders])
 
@@ -199,7 +247,8 @@ export function UserManagement() {
   useEffect(() => {
     fetchStats(true)  // 首次加载使用快速模式
     fetchGroups()  // 获取分组列表
-  }, [fetchStats, fetchGroups])
+    fetchLoginSources()
+  }, [fetchStats, fetchGroups, fetchLoginSources])
 
   useEffect(() => {
     fetchUsers()
@@ -311,6 +360,48 @@ export function UserManagement() {
     }
   }
 
+  const loginSourceLabel = (key: string) => loginSources.find(s => s.key === key)?.label ?? key
+
+  const renderLoginSources = (user: UserInfo) => {
+    const sources = user.login_sources?.length ? user.login_sources : [user.source || 'password']
+    return (
+      <div className="flex flex-wrap gap-1">
+        {sources.map((key) => {
+          const Icon = LOGIN_SOURCE_ICONS[key] ?? Globe
+          return (
+            <span key={key} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground whitespace-nowrap">
+              <Icon className="h-3 w-3 shrink-0" />{loginSourceLabel(key)}
+            </span>
+          )
+        })}
+      </div>
+    )
+  }
+
+  const renderPaid = (user: UserInfo) => {
+    if (user.paid_via === 'top_up') return <Badge variant="success" className="whitespace-nowrap">已付费</Badge>
+    if (user.paid_via === 'credited') {
+      return <Badge variant="secondary" className="whitespace-nowrap" title={`无成功充值单，但终身到账额 ${formatQuota(user.topup_quota || 0)}（后台 / 线下到账）`}>已到账</Badge>
+    }
+    return <Badge variant="outline" className="whitespace-nowrap text-muted-foreground font-normal">未付费</Badge>
+  }
+
+  const renderRisk = (risk: UserRisk | null | undefined) => {
+    if (risk === null || risk === undefined) return <span className="text-xs text-muted-foreground" title="网关没有风控表 risk_events">-</span>
+    const info = RISK_LABELS[risk.status]
+    if (!info) return <span className="text-xs text-muted-foreground">-</span>
+    const when = risk.resolved_at ? `，处理于 ${new Date(risk.resolved_at * 1000).toLocaleString('zh-CN')}` : ''
+    const cases = risk.open_cases && risk.open_cases > 1 ? `（${risk.open_cases} 起）` : ''
+    return (
+      <div className="flex flex-col items-start gap-0.5" title={`${info.hint}${when}`}>
+        <Badge variant={info.variant} className="whitespace-nowrap">{info.label}{cases}</Badge>
+        {risk.status === 'open' && (risk.held_usd || 0) > 0 && (
+          <span className="text-[11px] text-amber-600 tabular-nums">扣住 ${(risk.held_usd || 0).toFixed(2)}</span>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       {/* Header */}
@@ -407,7 +498,7 @@ export function UserManagement() {
               <div className="relative flex-1 max-w-sm">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="搜索用户名/邮箱/LinuxDoID/邀请码..."
+                  placeholder="搜索用户名/显示名/邮箱/邀请码..."
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                   onKeyPress={handleKeyPress}
@@ -437,9 +528,9 @@ export function UserManagement() {
             </div>
             <div className="w-full sm:w-36">
               <Select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1) }}>
-                <option value="">所有来源</option>
-                {Object.entries(SOURCE_LABELS).map(([key, info]) => (
-                  <option key={key} value={key}>{info.label}</option>
+                <option value="">所有登录方式</option>
+                {loginSources.map((s) => (
+                  <option key={s.key} value={s.key}>{s.label}</option>
                 ))}
               </Select>
             </div>
@@ -451,7 +542,7 @@ export function UserManagement() {
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
             </div>
           ) : users.length > 0 ? (
-            <div className="rounded-md border">
+            <div className="rounded-md border overflow-x-auto">
               <Table>
                 <TableHeader className="bg-muted/50">
                   <TableRow>
@@ -459,8 +550,12 @@ export function UserManagement() {
                     <TableHead>用户</TableHead>
                     <TableHead className="hidden sm:table-cell">角色</TableHead>
                     <TableHead>状态</TableHead>
-                    <TableHead className="hidden lg:table-cell">Linux.do</TableHead>
+                    <TableHead>付费</TableHead>
+                    <TableHead className="hidden md:table-cell">风控</TableHead>
+                    <TableHead className="hidden lg:table-cell" title="注册国家（signup_country）/ 赠额档位（grant_region）">国家 / 档位</TableHead>
+                    <TableHead className="hidden lg:table-cell">登录方式</TableHead>
                     <TableHead className="text-right">额度 (USD)</TableHead>
+                    <TableHead className="text-right hidden sm:table-cell" title="未付费账号余额中属于注册赠额的部分：min(余额, 实发赠额)">剩余赠额</TableHead>
                     <TableHead className="text-right hidden sm:table-cell">已用</TableHead>
                     <TableHead className="text-right hidden md:table-cell">请求数</TableHead>
                     <TableHead className="hidden md:table-cell">最后请求</TableHead>
@@ -498,41 +593,26 @@ export function UserManagement() {
                         {getRoleBadge(user.role)}
                       </TableCell>
                       <TableCell>{getStatusBadge(user.status)}</TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        {user.linux_do_id ? (
-                          <button
-                            onClick={async () => {
-                              const lid = user.linux_do_id
-                              if (!lid || linuxDoLookupLoading) return
-                              setLinuxDoLookupLoading(lid)
-                              try {
-                                const res = await fetch(`${apiUrl}/api/linuxdo/lookup/${encodeURIComponent(lid)}`, { headers: getAuthHeaders() })
-                                const data = await res.json()
-                                if (data.success && data.data?.profile_url) {
-                                  window.open(data.data.profile_url, '_blank')
-                                } else if (data.error_type === 'rate_limit') {
-                                  showToast('error', data.message || `请求被限速，请等待 ${data.wait_seconds || '?'} 秒后重试`)
-                                } else if (data.fallback_url) {
-                                  window.open(data.fallback_url, '_blank')
-                                  showToast('info', '服务器查询失败，已在新标签页打开 Linux.do 证书页面')
-                                } else {
-                                  showToast('error', data.message || '查询 Linux.do 用户名失败')
-                                }
-                              } catch { showToast('error', '查询 Linux.do 用户名失败') }
-                              finally { setLinuxDoLookupLoading(null) }
-                            }}
-                            disabled={linuxDoLookupLoading === user.linux_do_id}
-                            className="text-xs font-mono text-blue-500 hover:text-blue-600 hover:underline disabled:opacity-50 cursor-pointer"
-                            title="点击查看 Linux.do 用户主页"
-                          >
-                            {linuxDoLookupLoading === user.linux_do_id ? '查询中...' : user.linux_do_id}
-                          </button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">-</span>
-                        )}
+                      <TableCell>{renderPaid(user)}</TableCell>
+                      <TableCell className="hidden md:table-cell">{renderRisk(user.risk)}</TableCell>
+                      <TableCell className="hidden lg:table-cell text-xs whitespace-nowrap">
+                        <div className="flex flex-col">
+                          <span className="font-mono">{user.signup_country || '-'}</span>
+                          {user.grant_region && (
+                            <span className="text-[11px] text-muted-foreground" title={`赠额档位 ${user.grant_region}，实发 ${formatQuota(user.granted_quota || 0)}`}>
+                              档位 {user.grant_region}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
+                      <TableCell className="hidden lg:table-cell">{renderLoginSources(user)}</TableCell>
                       <TableCell className="text-right font-mono text-sm font-bold text-primary tabular-nums tracking-tight">
                         {formatQuota(user.quota)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs hidden sm:table-cell tabular-nums">
+                        {(user.free_credit_usd || 0) > 0
+                          ? <span className="text-amber-600">${(user.free_credit_usd || 0).toFixed(2)}</span>
+                          : <span className="text-muted-foreground">-</span>}
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs text-muted-foreground hidden sm:table-cell tabular-nums">
                         {formatQuota(user.used_quota)}

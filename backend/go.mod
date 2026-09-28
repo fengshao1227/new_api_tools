@@ -4,8 +4,6 @@ go 1.25.6
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
-	github.com/bogdanfinn/fhttp v0.6.8
-	github.com/bogdanfinn/tls-client v1.11.2
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-sql-driver/mysql v1.9.3
@@ -23,8 +21,6 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/ClickHouse/ch-go v0.73.0 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
-	github.com/bogdanfinn/quic-go-utls v1.0.4-utls // indirect
-	github.com/bogdanfinn/utls v1.7.7-barnius // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -60,7 +56,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect

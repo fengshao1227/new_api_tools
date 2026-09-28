@@ -25,6 +25,7 @@ func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 		g.GET("/activity-stats", GetActivityStats)
 		g.GET("/stats", GetActivityStats)
 		g.GET("/groups", GetUserGroups)
+		g.GET("/login-sources", GetUserLoginSources)
 		g.GET("", GetUsers)
 		g.POST("/:user_id/ban", BanUser)
 		g.POST("/:user_id/unban", UnbanUser)
@@ -60,6 +61,13 @@ func GetUserGroups(c *gin.Context) {
 			"total": len(groups),
 		},
 	})
+}
+
+// GET /api/users/login-sources — the login source filter's choices: built-in
+// OAuth columns, console-configured providers (user_oauth_bindings) and password.
+func GetUserLoginSources(c *gin.Context) {
+	svc := service.NewUserManagementService()
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": svc.GetLoginSources()})
 }
 
 // GET /api/users

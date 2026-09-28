@@ -2,12 +2,9 @@ package service
 
 import (
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/new-api-tools/backend/internal/database"
-	"github.com/new-api-tools/backend/internal/logger"
 )
 
 // Activity level constants
@@ -26,15 +23,6 @@ type UserManagementService struct {
 	db    *database.Manager
 	logDB *database.Manager
 }
-
-// Cached OAuth column existence checks
-var (
-	oauthColumnsOnce   sync.Once
-	availableOAuthCols []string // columns that actually exist in the users table
-)
-
-// allOAuthColumns lists all possible OAuth ID columns in New API users table
-var allOAuthColumns = []string{"github_id", "wechat_id", "telegram_id", "discord_id", "oidc_id", "linux_do_id"}
 
 // NewUserManagementService creates a new UserManagementService
 func NewUserManagementService() *UserManagementService {
@@ -56,20 +44,6 @@ func (s *UserManagementService) activeUserIDsSince(since int64) (map[int64]bool,
 		set[toInt64(r["user_id"])] = true
 	}
 	return set, nil
-}
-
-// getAvailableOAuthColumns returns OAuth columns that exist in the users table (cached)
-func (s *UserManagementService) getAvailableOAuthColumns() []string {
-	oauthColumnsOnce.Do(func() {
-		availableOAuthCols = make([]string, 0)
-		for _, col := range allOAuthColumns {
-			if s.db.ColumnExists("users", col) {
-				availableOAuthCols = append(availableOAuthCols, col)
-			}
-		}
-		logger.L.Business(fmt.Sprintf("检测到 users 表 OAuth 字段: %v", availableOAuthCols))
-	})
-	return availableOAuthCols
 }
 
 // GetActivityStats returns user activity statistics
@@ -151,249 +125,6 @@ func (s *UserManagementService) GetActivityStats(quick bool) (map[string]interfa
 		"inactive_users":      inactiveCount,
 		"very_inactive_users": veryInactive,
 		"never_requested":     neverCount,
-	}, nil
-}
-
-// ListUsersParams defines parameters for listing users
-type ListUsersParams struct {
-	Page           int    `json:"page"`
-	PageSize       int    `json:"page_size"`
-	ActivityFilter string `json:"activity_filter"`
-	GroupFilter    string `json:"group_filter"`
-	SourceFilter   string `json:"source_filter"`
-	Search         string `json:"search"`
-	OrderBy        string `json:"order_by"`
-	OrderDir       string `json:"order_dir"`
-}
-
-// GetUsers returns paginated user list
-func (s *UserManagementService) GetUsers(params ListUsersParams) (map[string]interface{}, error) {
-	if params.Page < 1 {
-		params.Page = 1
-	}
-	if params.PageSize < 1 || params.PageSize > 100 {
-		params.PageSize = 20
-	}
-	if params.OrderBy == "" {
-		params.OrderBy = "request_count"
-	}
-	if params.OrderDir == "" {
-		params.OrderDir = "DESC"
-	}
-
-	// Validate order_by
-	allowedOrderBy := map[string]bool{
-		"id": true, "username": true, "request_count": true,
-		"quota": true, "used_quota": true,
-	}
-	if !allowedOrderBy[params.OrderBy] {
-		params.OrderBy = "request_count"
-	}
-	orderDir := strings.ToUpper(params.OrderDir)
-	if orderDir != "ASC" && orderDir != "DESC" {
-		orderDir = "DESC"
-	}
-
-	groupCol := s.db.QuoteIdentifier("group")
-
-	// Detect which OAuth columns exist in the database
-	oauthCols := s.getAvailableOAuthColumns()
-	oauthColSet := make(map[string]bool)
-	for _, col := range oauthCols {
-		oauthColSet[col] = true
-	}
-
-	offset := (params.Page - 1) * params.PageSize
-	where := []string{"u.deleted_at IS NULL"}
-	args := []interface{}{}
-	argIdx := 1
-
-	// 全局面板白名单：用户列表默认隐藏（管理白名单页通过 search 精确找人仍可用）
-	if params.Search == "" {
-		if cond, wlArgs, next := PanelWhitelistNotInSQL("u.id", argIdx); cond != "" {
-			where = append(where, strings.TrimPrefix(strings.TrimSpace(cond), "AND "))
-			args = append(args, wlArgs...)
-			argIdx = next
-		}
-	}
-
-	if params.Search != "" {
-		// Build search fields: always include username, display_name, email, aff_code
-		// Conditionally include linux_do_id if it exists
-		if s.db.IsPG {
-			searchFields := []string{
-				fmt.Sprintf("u.username ILIKE $%d", argIdx),
-				fmt.Sprintf("COALESCE(u.display_name,'') ILIKE $%d", argIdx+1),
-				fmt.Sprintf("COALESCE(u.email,'') ILIKE $%d", argIdx+2),
-			}
-			searchPattern := "%" + params.Search + "%"
-			args = append(args, searchPattern, searchPattern, searchPattern)
-			nextIdx := argIdx + 3
-
-			if oauthColSet["linux_do_id"] {
-				searchFields = append(searchFields, fmt.Sprintf("COALESCE(u.linux_do_id,'') ILIKE $%d", nextIdx))
-				args = append(args, searchPattern)
-				nextIdx++
-			}
-			searchFields = append(searchFields, fmt.Sprintf("COALESCE(u.aff_code,'') ILIKE $%d", nextIdx))
-			args = append(args, searchPattern)
-			nextIdx++
-
-			where = append(where, "("+strings.Join(searchFields, " OR ")+")")
-			argIdx = nextIdx
-		} else {
-			searchFields := []string{
-				"u.username LIKE ?",
-				"COALESCE(u.display_name,'') LIKE ?",
-				"COALESCE(u.email,'') LIKE ?",
-			}
-			searchPattern := "%" + params.Search + "%"
-			args = append(args, searchPattern, searchPattern, searchPattern)
-
-			if oauthColSet["linux_do_id"] {
-				searchFields = append(searchFields, "COALESCE(u.linux_do_id,'') LIKE ?")
-				args = append(args, searchPattern)
-			}
-			searchFields = append(searchFields, "COALESCE(u.aff_code,'') LIKE ?")
-			args = append(args, searchPattern)
-
-			where = append(where, "("+strings.Join(searchFields, " OR ")+")")
-		}
-	}
-	if params.GroupFilter != "" {
-		if s.db.IsPG {
-			where = append(where, fmt.Sprintf("u.%s = $%d", groupCol, argIdx))
-			argIdx++
-		} else {
-			where = append(where, fmt.Sprintf("u.%s = ?", groupCol))
-		}
-		args = append(args, params.GroupFilter)
-	}
-	if params.ActivityFilter == ActivityNever {
-		where = append(where, "u.request_count = 0")
-	}
-
-	// Source filter — only apply if the relevant column exists
-	if params.SourceFilter != "" {
-		var sourceCond string
-		switch params.SourceFilter {
-		case "password":
-			// Password means none of the OAuth columns are set
-			condParts := make([]string, 0)
-			for _, col := range oauthCols {
-				condParts = append(condParts, fmt.Sprintf("(u.%s IS NULL OR u.%s = '')", col, col))
-			}
-			if len(condParts) > 0 {
-				sourceCond = strings.Join(condParts, " AND ")
-			}
-		default:
-			// Map filter name to column name
-			colMap := map[string]string{
-				"github": "github_id", "wechat": "wechat_id", "telegram": "telegram_id",
-				"discord": "discord_id", "oidc": "oidc_id", "linux_do": "linux_do_id",
-			}
-			if colName, ok := colMap[params.SourceFilter]; ok && oauthColSet[colName] {
-				sourceCond = fmt.Sprintf("u.%s IS NOT NULL AND u.%s <> ''", colName, colName)
-			}
-		}
-		if sourceCond != "" {
-			where = append(where, "("+sourceCond+")")
-		}
-	}
-
-	whereClause := strings.Join(where, " AND ")
-
-	// Count total
-	countQuery := fmt.Sprintf("SELECT COUNT(*) as count FROM users u WHERE %s", whereClause)
-	if !s.db.IsPG {
-		countQuery = s.db.RebindQuery(countQuery)
-	}
-	countRow, err := s.db.QueryOne(countQuery, args...)
-	if err != nil {
-		return nil, err
-	}
-	total := toInt64(countRow["count"])
-
-	// Build SELECT columns dynamically based on available OAuth columns
-	// NOTE: users table does NOT have created_at — do not select it
-	selectCols := fmt.Sprintf("u.id, u.username, u.display_name, u.email, u.role, u.status, u.quota, u.used_quota, u.request_count, u.%s, u.aff_code, u.remark", groupCol)
-	for _, col := range oauthCols {
-		selectCols += fmt.Sprintf(", u.%s", col)
-	}
-
-	var selectQuery string
-	if s.db.IsPG {
-		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM users u WHERE %s ORDER BY u.%s %s LIMIT $%d OFFSET $%d",
-			selectCols, whereClause, params.OrderBy, orderDir, argIdx, argIdx+1)
-		args = append(args, params.PageSize, offset)
-	} else {
-		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM users u WHERE %s ORDER BY u.%s %s LIMIT ? OFFSET ?",
-			selectCols, whereClause, params.OrderBy, orderDir)
-		args = append(args, params.PageSize, offset)
-		selectQuery = s.db.RebindQuery(selectQuery)
-	}
-
-	rows, err := s.db.Query(selectQuery, args...)
-	if err != nil {
-		logger.L.Error(fmt.Sprintf("GetUsers 查询失败: %v, SQL: %s, args: %v", err, selectQuery, args))
-		return nil, err
-	}
-	if rows == nil {
-		rows = []map[string]interface{}{}
-	}
-
-	// Enrich rows with computed fields (activity_level, source, linux_do_id)
-	for _, row := range rows {
-		reqCount := toInt64(row["request_count"])
-		if reqCount == 0 {
-			row["activity_level"] = ActivityNever
-		} else {
-			row["activity_level"] = ActivityActive
-		}
-		row["last_request_time"] = nil
-
-		// Preserve linux_do_id for frontend display
-		linuxDoID := ""
-		if oauthColSet["linux_do_id"] {
-			linuxDoID = toString(row["linux_do_id"])
-		}
-		row["linux_do_id"] = linuxDoID
-
-		// Compute source from OAuth ID fields (only check existing columns)
-		source := "password"
-		if oauthColSet["linux_do_id"] && toString(row["linux_do_id"]) != "" {
-			source = "linux_do"
-		} else if oauthColSet["github_id"] && toString(row["github_id"]) != "" {
-			source = "github"
-		} else if oauthColSet["wechat_id"] && toString(row["wechat_id"]) != "" {
-			source = "wechat"
-		} else if oauthColSet["telegram_id"] && toString(row["telegram_id"]) != "" {
-			source = "telegram"
-		} else if oauthColSet["discord_id"] && toString(row["discord_id"]) != "" {
-			source = "discord"
-		} else if oauthColSet["oidc_id"] && toString(row["oidc_id"]) != "" {
-			source = "oidc"
-		}
-		row["source"] = source
-
-		// Clean up internal OAuth fields (except linux_do_id which is kept)
-		for _, col := range oauthCols {
-			if col != "linux_do_id" {
-				delete(row, col)
-			}
-		}
-	}
-
-	totalPages := int((total + int64(params.PageSize) - 1) / int64(params.PageSize))
-
-	return map[string]interface{}{
-		"items":       rows,
-		"total":       total,
-		"page":        params.Page,
-		"page_size":   params.PageSize,
-		"total_pages": totalPages,
 	}, nil
 }
 

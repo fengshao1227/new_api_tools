@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import {
     Eye, Loader2, AlertTriangle, ShieldCheck, ShieldBan,
-    Activity, Globe, Clock, ExternalLink,
+    Activity, Globe, Clock,
 } from 'lucide-react'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
@@ -68,7 +68,6 @@ export interface UserAnalysis {
     user: {
         id: number; username: string; display_name?: string | null; email?: string | null
         status: number; group?: string | null; remark?: string | null
-        linux_do_id?: string | null
     }
     summary: {
         total_requests: number; success_requests: number; failure_requests: number
@@ -184,7 +183,6 @@ export function UserAnalysisDialog({
     const [analysisWindow, setAnalysisWindow] = useState<string>(initialWindow || '24h')
     const [analysis, setAnalysis] = useState<UserAnalysis | null>(null)
     const [analysisLoading, setAnalysisLoading] = useState(false)
-    const [linuxDoLookupLoading, setLinuxDoLookupLoading] = useState<string | null>(null)
     const [mutating, setMutating] = useState(false)
     const [banConfirmDialog, setBanConfirmDialog] = useState<{
         open: boolean
@@ -234,29 +232,6 @@ export function UserAnalysisDialog({
         }
     }, [open, userId, analysisWindow, fetchUserAnalysis])
 
-    // ── Linux.do 查询 ──
-    const handleLinuxDoLookup = async (lid: string) => {
-        if (!lid || linuxDoLookupLoading) return
-        setLinuxDoLookupLoading(lid)
-        try {
-            const res = await fetch(`${apiUrl}/api/linuxdo/lookup/${encodeURIComponent(lid)}`, { headers: getAuthHeaders() })
-            const data = await res.json()
-            if (data.success && data.data?.profile_url) {
-                globalThis.open(data.data.profile_url, '_blank')
-            } else if (data.error_type === 'rate_limit') {
-                showToast('error', data.message || `请求被限速，请等待 ${data.wait_seconds || '?'} 秒后重试`)
-            } else if (data.fallback_url) {
-                globalThis.open(data.fallback_url, '_blank')
-                showToast('info', '服务器查询失败，已在新标签页打开 Linux.do 证书页面')
-            } else {
-                showToast('error', data.message || '查询 Linux.do 用户名失败')
-            }
-        } catch {
-            showToast('error', '查询 Linux.do 用户名失败')
-        }
-        finally { setLinuxDoLookupLoading(null) }
-    }
-
     // ── 封禁/解封 API（后端转调网关 /api/user/manage） ──
     const handleBanConfirm = async () => {
         const isBan = banConfirmDialog.type === 'ban'
@@ -303,18 +278,6 @@ export function UserAnalysisDialog({
                                     <span>用户: <span className="font-mono text-foreground font-medium">{username}</span></span>
                                     <span className="text-muted-foreground">ID: {userId}</span>
                                     {headerExtra}
-                                    {analysis?.user?.linux_do_id && (
-                                        <button
-                                            onClick={() => handleLinuxDoLookup(analysis.user.linux_do_id!)}
-                                            disabled={linuxDoLookupLoading === analysis.user.linux_do_id}
-                                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100 hover:border-orange-300 dark:bg-orange-900/20 dark:text-orange-300 dark:border-orange-800 dark:hover:bg-orange-900/30 transition-colors disabled:opacity-50 cursor-pointer"
-                                            title="点击查看 Linux.do 用户主页"
-                                        >
-                                            <img src="https://linux.do/uploads/default/optimized/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994_2_32x32.png" alt="L" className="w-3.5 h-3.5 rounded-sm" />
-                                            {linuxDoLookupLoading === analysis.user.linux_do_id ? 'Linux.do: 查询中...' : `Linux.do: ${analysis.user.linux_do_id}`}
-                                            <ExternalLink className="w-3 h-3" />
-                                        </button>
-                                    )}
                                 </DialogDescription>
                             </div>
                             {!hideWindowSelector && (

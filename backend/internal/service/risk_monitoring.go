@@ -68,7 +68,7 @@ func (s *RiskMonitoringService) GetUserAnalysis(userID int64, windowSeconds int6
 	// User info
 	groupCol := s.db.QuoteIdentifier("group")
 	userRow, _ := s.db.QueryOne(s.db.RebindQuery(
-		fmt.Sprintf("SELECT id, username, display_name, email, status, %s, remark, linux_do_id, request_count FROM users WHERE id = ? AND deleted_at IS NULL", groupCol)), userID)
+		fmt.Sprintf("SELECT id, username, display_name, email, status, %s, remark, request_count FROM users WHERE id = ? AND deleted_at IS NULL", groupCol)), userID)
 
 	// Build user object
 	userInfo := map[string]interface{}{
@@ -79,7 +79,6 @@ func (s *RiskMonitoringService) GetUserAnalysis(userID int64, windowSeconds int6
 		"status":       1,
 		"group":        nil,
 		"remark":       nil,
-		"linux_do_id":  nil,
 	}
 	if userRow != nil {
 		userInfo["id"] = userRow["id"]
@@ -89,7 +88,6 @@ func (s *RiskMonitoringService) GetUserAnalysis(userID int64, windowSeconds int6
 		userInfo["status"] = userRow["status"]
 		userInfo["group"] = userRow["group"]
 		userInfo["remark"] = userRow["remark"]
-		userInfo["linux_do_id"] = userRow["linux_do_id"]
 	}
 
 	// Usage stats in window
