@@ -38,7 +38,7 @@
 
 | 模块 | 能力 |
 |---|---|
-| 统一仪表盘 | 汇总用户、令牌、渠道、模型、兑换码、请求趋势、活跃用户和系统规模。 |
+| 经营仪表盘 | 最上面是增长（本月/累计注册、付费、收入 + 按日/按月趋势表）；下面按今天 / 7 天 / 30 天看计费额、供应商成本、实际消费收入与毛利（与毛利页同口径）、现金收入，注册转化（按来源 / 国家），赠额发放与负债、网关风控待审与扣住金额，异步任务成败与失败原因、退款，上游账户与未关闭告警，定价缺口（无成本表达式的模型、未定价调用），以及排除免费模型后的模型排行。风控页、上游监控、告警表不存在时对应卡片显示「无数据」。 |
 | 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细拆分注册用户，并对照成功充值标记已付费、未付费和付费率。 |
 | 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
@@ -84,7 +84,7 @@ docker-compose up -d
 
 ### 日志分库（LOG_SQL_DSN）自动兼容
 
-部分 NewAPI fork 支持 `LOG_SQL_DSN`，把 `logs` 表整张分离到**独立日志数据库**（MySQL、PostgreSQL 或 ClickHouse）。这种部署下主库的 `logs` 表会被冻结、不再更新——本工具若只连主库，则**仪表盘流量分析、使用日志、模型监控、IP 分析全部显示为 0**（其余如用户、令牌数据正常）。
+部分 NewAPI fork 支持 `LOG_SQL_DSN`，把 `logs` 表整张分离到**独立日志数据库**（MySQL、PostgreSQL 或 ClickHouse）。这种部署下主库的 `logs` 表会被冻结、不再更新——本工具若只连主库，则**仪表盘的计费/成本/毛利与模型排行、使用日志、模型监控、IP 分析全部显示为 0**（其余如用户、令牌数据正常）。
 
 **无需任何额外操作**：上面的一键脚本 / `deploy.sh` 会自动检测 NewAPI 是否启用了 `LOG_SQL_DSN`，若启用则自动解析、做容器名 / 网络改写、写入工具 `.env` 并把工具容器接入日志库网络。NewAPI 未启用时则跳过（日志查询回落主库，行为不变）。
 
@@ -159,7 +159,7 @@ npm run dev
 |---|---|
 | 健康检查 | `GET /api/health`、`GET /api/health/db` |
 | 认证 | `POST /api/auth/login`、`POST /api/auth/logout` |
-| 仪表盘 | `GET /api/dashboard/*` |
+| 仪表盘 | `GET /api/dashboard/growth`、`GET /api/dashboard/growth/trend`；经营视图 `GET /api/dashboard/business/{finance,conversion,gifts-risk,tasks,pricing-gaps}?window=today\|7d\|30d`、`GET /api/dashboard/business/supply` |
 | 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景 |
 | 充值 | `GET /api/top-ups`、`GET /api/top-ups/analytics/*` |
 | 用户分析 | `GET /api/risk/users/:id/analysis`、`GET /api/ip/lookup/:ip`、`GET /api/ip/geo/*` |
