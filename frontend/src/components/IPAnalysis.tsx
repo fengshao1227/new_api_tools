@@ -9,8 +9,8 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 echarts.use([MapChart, TooltipComponent, VisualMapComponent, CanvasRenderer])
 import {
-  Globe, MapPin, RefreshCw, Loader2, TrendingUp,
-  AlertTriangle, Activity, ChevronRight, ChevronDown, Timer, Map as MapIcon,
+  Globe, MapPin, RefreshCw, Loader2, Flag,
+  AlertTriangle, Activity, ChevronDown, Timer,
   Database, CheckCircle2
 } from 'lucide-react'
 import { IPLookup } from './IPLookup'
@@ -18,11 +18,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 
-interface RegionStats {
+interface CountryStats {
   country: string
   country_code: string
-  region?: string
-  city?: string
   ip_count: number
   request_count: number
   user_count: number
@@ -37,152 +35,50 @@ interface IPDistributionData {
   sampled_requests: number
   coverage_percentage: number
   geo_available: boolean
-  domestic_percentage: number
-  overseas_percentage: number
-  by_country: RegionStats[]
-  by_province: RegionStats[]
-  top_cities: RegionStats[]
+  by_country: CountryStats[]
   snapshot_time: number
 }
 
 type TimeWindow = '1h' | '6h' | '24h' | '7d'
-type MapType = 'world' | 'china'
-
-// 省份名称映射（GeoIP 返回英文名，ECharts 中国地图使用中文名）
-const provinceNameMap: Record<string, string> = {
-  // 英文名 -> 中文名
-  'Beijing': '北京',
-  'Tianjin': '天津',
-  'Hebei': '河北',
-  'Shanxi': '山西',
-  'Inner Mongolia': '内蒙古',
-  'Nei Mongol': '内蒙古',
-  'Liaoning': '辽宁',
-  'Jilin': '吉林',
-  'Heilongjiang': '黑龙江',
-  'Shanghai': '上海',
-  'Jiangsu': '江苏',
-  'Zhejiang': '浙江',
-  'Anhui': '安徽',
-  'Fujian': '福建',
-  'Jiangxi': '江西',
-  'Shandong': '山东',
-  'Henan': '河南',
-  'Hubei': '湖北',
-  'Hunan': '湖南',
-  'Guangdong': '广东',
-  'Guangxi': '广西',
-  'Guangxi Zhuang': '广西',
-  'Hainan': '海南',
-  'Chongqing': '重庆',
-  'Sichuan': '四川',
-  'Guizhou': '贵州',
-  'Yunnan': '云南',
-  'Tibet': '西藏',
-  'Xizang': '西藏',
-  'Shaanxi': '陕西',
-  'Gansu': '甘肃',
-  'Qinghai': '青海',
-  'Ningxia': '宁夏',
-  'Ningxia Hui': '宁夏',
-  'Xinjiang': '新疆',
-  'Xinjiang Uyghur': '新疆',
-  'Taiwan': '台湾',
-  'Hong Kong': '香港',
-  'Macau': '澳门',
-  'Macao': '澳门',
-  // 中文名保持不变（兼容）
-  '北京': '北京',
-  '天津': '天津',
-  '河北': '河北',
-  '山西': '山西',
-  '内蒙古': '内蒙古',
-  '辽宁': '辽宁',
-  '吉林': '吉林',
-  '黑龙江': '黑龙江',
-  '上海': '上海',
-  '江苏': '江苏',
-  '浙江': '浙江',
-  '安徽': '安徽',
-  '福建': '福建',
-  '江西': '江西',
-  '山东': '山东',
-  '河南': '河南',
-  '湖北': '湖北',
-  '湖南': '湖南',
-  '广东': '广东',
-  '广西': '广西',
-  '海南': '海南',
-  '重庆': '重庆',
-  '四川': '四川',
-  '贵州': '贵州',
-  '云南': '云南',
-  '西藏': '西藏',
-  '陕西': '陕西',
-  '甘肃': '甘肃',
-  '青海': '青海',
-  '宁夏': '宁夏',
-  '新疆': '新疆',
-  '台湾': '台湾',
-  '香港': '香港',
-  '澳门': '澳门',
+// GeoIP names countries in Chinese; the ECharts world map (public/world.json)
+// names its regions in English, some abbreviated. Intl gives the English name
+// for an ISO code; these are the codes whose world.json name differs from it.
+const WORLD_MAP_NAME_OVERRIDES: Record<string, string> = {
+  AG: 'Antigua and Barb.', AX: 'Aland', BA: 'Bosnia and Herz.', CD: 'Dem. Rep. Congo',
+  CF: 'Central African Rep.', CG: 'Congo', CI: "Côte d'Ivoire", CZ: 'Czech Rep.',
+  DO: 'Dominican Rep.', EH: 'W. Sahara', FK: 'Falkland Is.', FO: 'Faeroe Is.',
+  GQ: 'Eq. Guinea', GS: 'S. Geo. and S. Sandw. Is.', HM: 'Heard I. and McDonald Is.',
+  IO: 'Br. Indian Ocean Ter.', KP: 'Dem. Rep. Korea', KR: 'Korea', KY: 'Cayman Is.',
+  LA: 'Lao PDR', LC: 'Saint Lucia', MK: 'Macedonia', MM: 'Myanmar', MP: 'N. Mariana Is.',
+  PF: 'Fr. Polynesia', PM: 'St. Pierre and Miquelon', PS: 'Palestine', SB: 'Solomon Is.',
+  SH: 'Saint Helena', SS: 'S. Sudan', ST: 'São Tomé and Principe', SZ: 'Swaziland',
+  TC: 'Turks and Caicos Is.', TF: 'Fr. S. Antarctic Lands', TR: 'Turkey',
+  TT: 'Trinidad and Tobago', VC: 'St. Vin. and Gren.', VI: 'U.S. Virgin Is.',
 }
 
-// 国家代码到英文名称映射（ECharts 世界地图使用英文名）
-const countryCodeToName: Record<string, string> = {
-  'CN': 'China',
-  'US': 'United States',
-  'JP': 'Japan',
-  'KR': 'South Korea',
-  'DE': 'Germany',
-  'FR': 'France',
-  'GB': 'United Kingdom',
-  'RU': 'Russia',
-  'CA': 'Canada',
-  'AU': 'Australia',
-  'BR': 'Brazil',
-  'IN': 'India',
-  'SG': 'Singapore',
-  'HK': 'Hong Kong',
-  'TW': 'Taiwan',
-  'NL': 'Netherlands',
-  'SE': 'Sweden',
-  'CH': 'Switzerland',
-  'IT': 'Italy',
-  'ES': 'Spain',
-  'PL': 'Poland',
-  'UA': 'Ukraine',
-  'TH': 'Thailand',
-  'VN': 'Vietnam',
-  'MY': 'Malaysia',
-  'ID': 'Indonesia',
-  'PH': 'Philippines',
-  'MX': 'Mexico',
-  'AR': 'Argentina',
-  'ZA': 'South Africa',
-  'AE': 'United Arab Emirates',
-  'SA': 'Saudi Arabia',
-  'TR': 'Turkey',
-  'IE': 'Ireland',
-  'FI': 'Finland',
-  'NO': 'Norway',
-  'DK': 'Denmark',
-  'AT': 'Austria',
-  'BE': 'Belgium',
-  'CZ': 'Czechia',
-  'PT': 'Portugal',
-  'NZ': 'New Zealand',
-  'IL': 'Israel',
-  'EG': 'Egypt',
-  'CL': 'Chile',
-  'CO': 'Colombia',
-  'PE': 'Peru',
-  'RO': 'Romania',
-  'HU': 'Hungary',
-  'GR': 'Greece',
-  'BD': 'Bangladesh',
-  'PK': 'Pakistan',
+const englishRegionNames = (() => {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' })
+  } catch {
+    return null
+  }
+})()
+
+function worldMapName(item: CountryStats) {
+  const code = (item.country_code || '').toUpperCase()
+  if (WORLD_MAP_NAME_OVERRIDES[code]) return WORLD_MAP_NAME_OVERRIDES[code]
+  if (/^[A-Z]{2}$/.test(code) && code !== 'XX' && code !== 'LO') {
+    try {
+      const name = englishRegionNames?.of(code)
+      if (name && name !== code) return name
+    } catch {
+      // Unknown code: fall through to the GeoIP name.
+    }
+  }
+  return item.country
 }
+
+const COUNTRY_RANK_LIMIT = 20
 
 function formatCountdown(seconds: number) {
   const mins = Math.floor(seconds / 60)
@@ -210,11 +106,7 @@ export function IPAnalysis() {
   const [refreshing, setRefreshing] = useState(false)
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('24h')
   const [mapLoaded, setMapLoaded] = useState(false)
-  const [chinaMapLoaded, setChinaMapLoaded] = useState(false)
-  const [mapType, setMapType] = useState<MapType>('world')
-  const [mapDropdownOpen, setMapDropdownOpen] = useState(false)
   const mapLoadedRef = useRef(false)
-  const chinaMapLoadedRef = useRef(false)
   
   const [showIntervalDropdown, setShowIntervalDropdown] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -308,47 +200,6 @@ export function IPAnalysis() {
     
     tryLoadMap()
   }, [])
-
-  // 加载中国地图（按需加载）
-  useEffect(() => {
-    if (mapType !== 'china' || chinaMapLoadedRef.current) return
-    chinaMapLoadedRef.current = true
-    
-    const CHINA_MAP_SOURCES = [
-      '/china.json',
-      'https://cdn.jsdelivr.net/gh/mouday/echarts-map@master/echarts-4.2.1-rc1-map/json/china.json',
-      'https://fastly.jsdelivr.net/gh/mouday/echarts-map@master/echarts-4.2.1-rc1-map/json/china.json',
-    ]
-    
-    const fetchWithTimeout = (url: string, timeout = 8000): Promise<Response> => {
-      return Promise.race([
-        fetch(url),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), timeout)
-        )
-      ])
-    }
-    
-    const tryLoadChinaMap = async () => {
-      for (const url of CHINA_MAP_SOURCES) {
-        try {
-          console.log(`[ChinaMap] Trying: ${url}`)
-          const res = await fetchWithTimeout(url)
-          if (!res.ok) continue
-          const chinaJson = await res.json()
-          echarts.registerMap('china', chinaJson)
-          setChinaMapLoaded(true)
-          console.log(`[ChinaMap] Loaded from: ${url}`)
-          return
-        } catch (err) {
-          console.warn(`[ChinaMap] Failed: ${url}`, err)
-        }
-      }
-      console.error('[ChinaMap] All sources failed')
-    }
-    
-    tryLoadChinaMap()
-  }, [mapType])
 
   const getAuthHeaders = useCallback(() => ({
     'Content-Type': 'application/json',
@@ -490,19 +341,15 @@ export function IPAnalysis() {
     if (!data || !mapLoaded) return {}
 
     const maxValue = data.by_country[0]?.request_count || 100
-    const totalRequests = data.total_requests || 1
 
     // 构建数据映射用于 tooltip
     const dataMap = new Map(
-      data.by_country.map(item => [
-        countryCodeToName[item.country_code] || item.country,
-        item
-      ])
+      data.by_country.map(item => [worldMapName(item), item])
     )
 
     // 转换数据为 ECharts 格式
     const mapData = data.by_country.map(item => ({
-      name: countryCodeToName[item.country_code] || item.country,
+      name: worldMapName(item),
       value: item.request_count,
     }))
 
@@ -539,13 +386,14 @@ export function IPAnalysis() {
           color: isDarkMode ? '#e2e8f0' : '#1e293b',
           fontSize: 13,
         },
-        formatter: (params: any) => {
+        formatter: (params: { name: string; seriesType?: string }) => {
           if (params.seriesType === 'effectScatter') {
             return ''
           }
           const itemData = dataMap.get(params.name)
           if (itemData) {
-            const percentage = ((itemData.request_count / totalRequests) * 100).toFixed(2)
+            // Share of the sampled requests, the same figure as the ranking table.
+            const percentage = itemData.percentage.toFixed(2)
             return `
               <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid ${themeColors.tooltipBorder}">
                 ${params.name}
@@ -617,140 +465,10 @@ export function IPAnalysis() {
     }
   }, [data, mapLoaded, isDarkMode])
 
-  // 中国地图配置
-  const chinaMapOption = useMemo(() => {
-    if (!data || !chinaMapLoaded) return {}
-
-    const maxValue = data.by_province[0]?.request_count || 100
-    const totalRequests = data.by_province.reduce((sum, item) => sum + item.request_count, 0) || 1
-
-    // 构建数据映射用于 tooltip
-    const dataMap = new Map(
-      data.by_province.map(item => [
-        provinceNameMap[item.region || ''] || item.region,
-        item
-      ])
-    )
-
-    // 转换数据为 ECharts 格式
-    const mapData = data.by_province.map(item => ({
-      name: provinceNameMap[item.region || ''] || item.region,
-      value: item.request_count,
-    }))
-
-    // 主题相关配色
-    const themeColors = isDarkMode ? {
-      bgColor: '#180a14',
-      areaColor: '#3d1a2e',
-      borderColor: '#5c2d4a',
-      emphasisColor: '#fbbf24',
-      textColor: '#94a3b8',
-      tooltipBg: 'rgba(15, 23, 42, 0.95)',
-      tooltipBorder: '#334155',
-      gradientColors: ['#3d1a2e', '#be185d', '#ec4899', '#f472b6', '#fbcfe8']
-    } : {
-      bgColor: '#fdf2f8',
-      areaColor: '#fce7f3',
-      borderColor: '#f9a8d4',
-      emphasisColor: '#f59e0b',
-      textColor: '#64748b',
-      tooltipBg: 'rgba(255, 255, 255, 0.98)',
-      tooltipBorder: '#fce7f3',
-      gradientColors: ['#fdf2f8', '#fbcfe8', '#f472b6', '#ec4899', '#be185d']
-    }
-
-    return {
-      backgroundColor: themeColors.bgColor,
-      tooltip: {
-        trigger: 'item',
-        backgroundColor: themeColors.tooltipBg,
-        borderColor: themeColors.tooltipBorder,
-        borderWidth: 1,
-        padding: [12, 16],
-        textStyle: {
-          color: isDarkMode ? '#e2e8f0' : '#1e293b',
-          fontSize: 13,
-        },
-        formatter: (params: any) => {
-          if (params.seriesType === 'effectScatter') {
-            return ''
-          }
-          const itemData = dataMap.get(params.name)
-          if (itemData) {
-            const percentage = ((itemData.request_count / totalRequests) * 100).toFixed(2)
-            return `
-              <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid ${themeColors.tooltipBorder}">
-                ${params.name}
-              </div>
-              <div style="display: grid; grid-template-columns: auto auto; gap: 4px 16px; font-size: 13px;">
-                <span style="color: ${themeColors.textColor}">流量</span>
-                <span style="font-weight: 500; text-align: right;">${itemData.request_count.toLocaleString('zh-CN')}</span>
-                <span style="color: ${themeColors.textColor}">占比</span>
-                <span style="font-weight: 500; text-align: right;">${percentage}%</span>
-                <span style="color: ${themeColors.textColor}">IP 数</span>
-                <span style="font-weight: 500; text-align: right;">${itemData.ip_count.toLocaleString('zh-CN')}</span>
-                <span style="color: ${themeColors.textColor}">用户数</span>
-                <span style="font-weight: 500; text-align: right;">${itemData.user_count.toLocaleString('zh-CN')}</span>
-              </div>
-            `
-          }
-          return `<div style="font-weight: 500">${params.name}</div><div style="color: ${themeColors.textColor}; font-size: 12px; margin-top: 4px;">暂无数据</div>`
-        }
-      },
-      visualMap: {
-        min: 0,
-        max: maxValue,
-        text: ['高', '低'],
-        realtime: false,
-        calculable: true,
-        inRange: {
-          color: themeColors.gradientColors
-        },
-        textStyle: {
-          color: themeColors.textColor,
-          fontSize: 12
-        },
-        left: 20,
-        bottom: 20,
-        itemWidth: 12,
-        itemHeight: 120,
-      },
-      series: [
-        {
-          name: '流量分布',
-          type: 'map',
-          map: 'china',
-          roam: true,
-          scaleLimit: { min: 1, max: 10 },
-          zoom: 1.2,
-          emphasis: {
-            label: {
-              show: true,
-              color: isDarkMode ? '#f8fafc' : '#1e293b',
-              fontSize: 12,
-              fontWeight: 500,
-            },
-            itemStyle: {
-              areaColor: themeColors.emphasisColor,
-              shadowColor: 'rgba(0, 0, 0, 0.3)',
-              shadowBlur: 10,
-            }
-          },
-          select: { disabled: true },
-          itemStyle: {
-            areaColor: themeColors.areaColor,
-            borderColor: themeColors.borderColor,
-            borderWidth: 0.5
-          },
-          label: { show: false },
-          data: mapData
-        }
-      ]
-    }
-  }, [data, chinaMapLoaded, isDarkMode])
-
-  const currentMapOption = mapType === 'world' ? worldMapOption : chinaMapOption
-  const isCurrentMapLoaded = mapType === 'world' ? mapLoaded : chinaMapLoaded
+  // Countries GeoIP could place: not the "未知" row, not private networks.
+  const placedCountries = (data?.by_country || []).filter(
+    (item) => item.country_code && item.country_code !== 'XX' && item.country_code !== 'LO'
+  )
 
   if (loading) {
     return (
@@ -852,7 +570,7 @@ export function IPAnalysis() {
       </div>
 
       {/* Overview Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         <StatCard
           title="独立 IP 数"
           value={formatNumber(data?.total_ips || 0)}
@@ -868,16 +586,11 @@ export function IPAnalysis() {
           color="emerald"
         />
         <StatCard
-          title="国内占比(样本)"
-          value={`${(data?.domestic_percentage || 0).toFixed(1)}%`}
-          icon={TrendingUp}
+          title="国家/地区数(样本)"
+          value={formatNumber(placedCountries.length)}
+          rawValue={placedCountries.length}
+          icon={Flag}
           color="purple"
-        />
-        <StatCard
-          title="海外占比(样本)"
-          value={`${(data?.overseas_percentage || 0).toFixed(1)}%`}
-          icon={Globe}
-          color="orange"
         />
         <StatCard
           title="样本覆盖"
@@ -900,71 +613,17 @@ export function IPAnalysis() {
       {/* World Map */}
       <Card className="shadow-sm">
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Globe className="w-5 h-5 text-muted-foreground" />
-                Web 流量请求（按{mapType === 'world' ? '国家/地区' : '省份'}）
-              </CardTitle>
-              <CardDescription>
-                过去 {getTimeWindowLabel(timeWindow)} · Top {formatNumber(data?.sampled_ip_limit || 3000)} IP 地理样本
-                {data && ` · 覆盖 ${data.coverage_percentage.toFixed(1)}% 流量`}
-              </CardDescription>
-            </div>
-            {/* 地图切换下拉框 */}
-            <div className="relative">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 gap-1.5"
-                onClick={() => setMapDropdownOpen(!mapDropdownOpen)}
-              >
-                {mapType === 'world' ? (
-                  <><Globe className="h-4 w-4" /> 世界地图</>
-                ) : (
-                  <><MapIcon className="h-4 w-4" /> 中国地图</>
-                )}
-                <ChevronDown className={cn("h-4 w-4 transition-transform", mapDropdownOpen && "rotate-180")} />
-              </Button>
-              {mapDropdownOpen && (
-                <>
-                  <div 
-                    className="fixed inset-0 z-10" 
-                    onClick={() => setMapDropdownOpen(false)} 
-                  />
-                  <div className="absolute right-0 top-full mt-1 z-20 bg-background border rounded-md shadow-lg py-1 min-w-[140px]">
-                    <button
-                      className={cn(
-                        "w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2",
-                        mapType === 'world' && "bg-muted font-medium"
-                      )}
-                      onClick={() => {
-                        setMapType('world')
-                        setMapDropdownOpen(false)
-                      }}
-                    >
-                      <Globe className="h-4 w-4" /> 世界地图
-                    </button>
-                    <button
-                      className={cn(
-                        "w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2",
-                        mapType === 'china' && "bg-muted font-medium"
-                      )}
-                      onClick={() => {
-                        setMapType('china')
-                        setMapDropdownOpen(false)
-                      }}
-                    >
-                      <MapIcon className="h-4 w-4" /> 中国地图
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Globe className="w-5 h-5 text-muted-foreground" />
+            Web 流量请求（按国家/地区）
+          </CardTitle>
+          <CardDescription>
+            过去 {getTimeWindowLabel(timeWindow)} · Top {formatNumber(data?.sampled_ip_limit || 3000)} IP 地理样本
+            {data && ` · 覆盖 ${data.coverage_percentage.toFixed(1)}% 流量`}
+          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          {mapError && mapType === 'world' ? (
+          {mapError ? (
             <div className="h-[450px] flex flex-col items-center justify-center text-muted-foreground bg-muted/20 rounded-b-lg gap-3">
               <AlertTriangle className="h-10 w-10 text-yellow-500" />
               <span>地图加载失败，请刷新页面重试</span>
@@ -972,17 +631,17 @@ export function IPAnalysis() {
                 刷新页面
               </Button>
             </div>
-          ) : !isCurrentMapLoaded ? (
+          ) : !mapLoaded ? (
             <div className="h-[450px] flex items-center justify-center text-muted-foreground">
               <Loader2 className="h-8 w-8 animate-spin mr-2" />
               加载地图中...
             </div>
-          ) : data && (mapType === 'world' ? data.by_country.length > 0 : data.by_province.length > 0) ? (
+          ) : data && data.by_country.length > 0 ? (
             <div className="relative overflow-hidden rounded-b-lg">
               <ReactECharts
-                key={`${mapType}-${isDarkMode ? 'dark' : 'light'}`}
+                key={isDarkMode ? 'dark' : 'light'}
                 echarts={echarts}
-                option={currentMapOption}
+                option={worldMapOption}
                 style={{ height: '450px', width: '100%' }}
                 opts={{ renderer: 'canvas' }}
               />
@@ -995,13 +654,13 @@ export function IPAnalysis() {
         </CardContent>
       </Card>
 
-      {/* Traffic Ranking Table */}
+      {/* Country Ranking */}
       <Card className="shadow-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Top IP 样本国家/地区排名</CardTitle>
+          <CardTitle className="text-lg">国家/地区排名</CardTitle>
           <CardDescription>
             过去 {getTimeWindowLabel(timeWindow)}
-            {data && ` · ${formatNumber(data.sampled_ips)} 个样本 IP / ${formatNumber(data.sampled_requests)} 次请求`}
+            {data && ` · ${formatNumber(data.sampled_ips)} 个样本 IP / ${formatNumber(data.sampled_requests)} 次请求 · 占比按样本请求计；用户数按 IP 累加，同一用户多个 IP 会重复计`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -1011,60 +670,26 @@ export function IPAnalysis() {
                 <thead>
                   <tr className="border-b">
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">国家/地区</th>
-                    <th className="text-right py-3 px-4 font-medium text-muted-foreground">流量</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.by_country.slice(0, 10).map((item, index) => (
-                    <tr key={index} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm">{item.country}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right tabular-nums font-medium">
-                        {item.request_count.toLocaleString('zh-CN')}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="h-[200px] flex items-center justify-center text-muted-foreground bg-muted/20 rounded-lg">
-              暂无数据
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Province Ranking (China) */}
-      {data && data.by_province.length > 0 && (
-        <Card className="shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg">中国省份流量排名</CardTitle>
-            <CardDescription>
-              过去 {getTimeWindowLabel(timeWindow)}
-              {data && ` · 基于 Top IP 地理样本`}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">省份</th>
-                    <th className="text-right py-3 px-4 font-medium text-muted-foreground">IP数</th>
+                    <th className="text-right py-3 px-4 font-medium text-muted-foreground">IP 数</th>
+                    <th className="text-right py-3 px-4 font-medium text-muted-foreground">用户数</th>
                     <th className="text-right py-3 px-4 font-medium text-muted-foreground">流量</th>
                     <th className="text-right py-3 px-4 font-medium text-muted-foreground">占比</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.by_province.slice(0, 10).map((item, index) => (
-                    <tr key={index} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
-                      <td className="py-3 px-4">{item.region}</td>
+                  {data.by_country.slice(0, COUNTRY_RANK_LIMIT).map((item) => (
+                    <tr key={`${item.country_code}-${item.country}`} className="border-b last:border-0 hover:bg-muted/50 transition-colors">
+                      <td className="py-3 px-4">
+                        <span className="text-sm">{item.country}</span>
+                        {item.country_code && item.country_code !== 'XX' && (
+                          <span className="ml-2 text-xs text-muted-foreground">{item.country_code}</span>
+                        )}
+                      </td>
                       <td className="py-3 px-4 text-right tabular-nums text-muted-foreground">
                         {item.ip_count.toLocaleString('zh-CN')}
+                      </td>
+                      <td className="py-3 px-4 text-right tabular-nums text-muted-foreground">
+                        {item.user_count.toLocaleString('zh-CN')}
                       </td>
                       <td className="py-3 px-4 text-right tabular-nums font-medium">
                         {item.request_count.toLocaleString('zh-CN')}
@@ -1076,38 +701,19 @@ export function IPAnalysis() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Alerts Section */}
-      {data && (data.overseas_percentage > 30 || data.by_country.length > 20) && (
-        <Card className="border-yellow-200 bg-yellow-50/50 dark:border-yellow-900 dark:bg-yellow-950/20">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
-              <AlertTriangle className="w-5 h-5" />
-              异常提醒
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 text-sm">
-              {data.overseas_percentage > 30 && (
-                <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
-                  <ChevronRight className="w-4 h-4" />
-                  <span>海外访问占比较高 ({data.overseas_percentage.toFixed(1)}%)，请关注是否有异常访问</span>
-                </div>
-              )}
-              {data.by_country.length > 20 && (
-                <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-400">
-                  <ChevronRight className="w-4 h-4" />
-                  <span>访问来源国家/地区较多 ({data.by_country.length} 个)，建议检查是否有代理滥用</span>
-                </div>
+              {data.by_country.length > COUNTRY_RANK_LIMIT && (
+                <p className="px-4 pt-3 text-xs text-muted-foreground">
+                  另有 {data.by_country.length - COUNTRY_RANK_LIMIT} 个国家/地区未列出
+                </p>
               )}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          ) : (
+            <div className="h-[200px] flex items-center justify-center text-muted-foreground bg-muted/20 rounded-lg">
+              暂无数据
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -61,14 +61,6 @@ var ipGeoServiceProvider = func() *IPGeoService {
 	return GetIPGeoService()
 }
 
-// domesticCountryCodes defines Chinese domestic country codes
-var domesticCountryCodes = map[string]bool{
-	"CN": true,
-	"HK": true,
-	"MO": true,
-	"TW": true,
-}
-
 // GetIPGeoService returns the singleton IPGeoService
 func GetIPGeoService() *IPGeoService {
 	geoServiceOnce.Do(func() {

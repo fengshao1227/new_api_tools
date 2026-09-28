@@ -25,32 +25,17 @@ func NewDashboardService() *DashboardService {
 	return &DashboardService{db: database.Get(), logDB: database.GetLog()}
 }
 
-// parsePeriodToTimestamps converts period strings like "24h", "7d" to start/end timestamps
+// parsePeriodToTimestamps converts a window such as "24h" or "7d" to
+// start/end timestamps. It reads WindowSeconds, the table the handler
+// validates against, so every accepted window means what it says (3h and 12h
+// used to fall through to 7 days). An unknown window is 7 days.
 func parsePeriodToTimestamps(period string) (int64, int64) {
 	now := time.Now().Unix()
-	var duration time.Duration
-
-	switch period {
-	case "1h":
-		duration = 1 * time.Hour
-	case "6h":
-		duration = 6 * time.Hour
-	case "24h":
-		duration = 24 * time.Hour
-	case "3d":
-		duration = 3 * 24 * time.Hour
-	case "7d":
-		duration = 7 * 24 * time.Hour
-	case "14d":
-		duration = 14 * 24 * time.Hour
-	case "30d":
-		duration = 30 * 24 * time.Hour
-	default:
-		duration = 7 * 24 * time.Hour
+	seconds, ok := WindowSeconds[period]
+	if !ok {
+		seconds = WindowSeconds["7d"]
 	}
-
-	start := now - int64(duration.Seconds())
-	return start, now
+	return now - seconds, now
 }
 
 // localTZOffset returns the local timezone offset in seconds (e.g. 28800 for UTC+8).
@@ -65,12 +50,16 @@ func (s *DashboardService) InvalidateDashboardCache() {
 	cm.DeleteByPrefix("dashboard:")
 }
 
-// GetIPDistribution returns IP access distribution statistics.
-// Total counters are computed from the full time window; geographic breakdowns
-// use a top-IP sample so large logs tables stay responsive.
+// GetIPDistribution returns where traffic comes from, country by country.
+// Total counters are computed from the full time window; the country
+// breakdown uses a top-IP sample so large logs tables stay responsive, and
+// the sample's size and coverage are returned with it.
+//
+// Beat serves an overseas audience, so there is no domestic/overseas split,
+// province or city breakdown: the country is the unit.
 func (s *DashboardService) GetIPDistribution(window string, noCache bool) (map[string]interface{}, error) {
 	cm := cache.Get()
-	cacheKey := fmt.Sprintf("dashboard:ip_distribution:%s", window)
+	cacheKey := fmt.Sprintf("dashboard:ip_distribution:v2:%s", window)
 	if !noCache {
 		var cached map[string]interface{}
 		if found, _ := cm.GetJSON(cacheKey, &cached); found {
@@ -79,23 +68,18 @@ func (s *DashboardService) GetIPDistribution(window string, noCache bool) (map[s
 	}
 
 	startTime, endTime := parsePeriodToTimestamps(window)
-	geoAvailable := IsIPGeoAvailable()
-
-	statsQuery := s.logDB.RebindQuery(`
+	statsRow, err := s.logDB.QueryOneWithTimeout(ipDistributionQueryTimeout, s.logDB.RebindQuery(`
 		SELECT
 			COUNT(DISTINCT ip) as total_ips,
 			COUNT(*) as total_requests
 		FROM logs
-		WHERE created_at >= ? AND created_at <= ? AND type IN (2, 5) AND ip IS NOT NULL AND ip <> ''`)
-	statsRow, err := s.logDB.QueryOneWithTimeout(ipDistributionQueryTimeout, statsQuery, startTime, endTime)
+		WHERE created_at >= ? AND created_at <= ? AND type IN (2, 5) AND ip IS NOT NULL AND ip <> ''`), startTime, endTime)
 	if err != nil {
 		return nil, err
 	}
-	totalIPs := toInt64(statsRow["total_ips"])
 	totalRequests := toInt64(statsRow["total_requests"])
 
-	// Step 1: Query distinct IPs with request counts and user counts
-	ipQuery := s.logDB.RebindQuery(`
+	rows, err := s.logDB.QueryWithTimeout(ipDistributionQueryTimeout, s.logDB.RebindQuery(`
 		SELECT ip,
 			COUNT(*) as request_count,
 			COUNT(DISTINCT user_id) as user_count
@@ -103,228 +87,100 @@ func (s *DashboardService) GetIPDistribution(window string, noCache bool) (map[s
 		WHERE created_at >= ? AND created_at <= ? AND type IN (2, 5) AND ip IS NOT NULL AND ip <> ''
 		GROUP BY ip
 		ORDER BY request_count DESC
-		LIMIT ?`)
-
-	rows, err := s.logDB.QueryWithTimeout(ipDistributionQueryTimeout, ipQuery, startTime, endTime, ipDistributionSampleLimit)
+		LIMIT ?`), startTime, endTime, ipDistributionSampleLimit)
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
-		result := map[string]interface{}{
-			"total_ips":           0,
-			"total_requests":      0,
-			"sampled_ip_limit":    ipDistributionSampleLimit,
-			"sampled_ips":         int64(0),
-			"sampled_requests":    int64(0),
-			"coverage_percentage": float64(0),
-			"geo_available":       geoAvailable,
-			"domestic_percentage": 0.0,
-			"overseas_percentage": 0.0,
-			"by_country":          []map[string]interface{}{},
-			"by_province":         []map[string]interface{}{},
-			"top_cities":          []map[string]interface{}{},
-			"snapshot_time":       time.Now().Unix(),
-		}
-		result["total_ips"] = totalIPs
-		result["total_requests"] = totalRequests
-		cm.Set(cacheKey, result, 5*time.Minute)
-		return result, nil
-	}
 
-	// Step 2: Collect IPs and look up GeoIP
-	type ipStat struct {
-		IP           string
-		RequestCount int64
-		UserCount    int64
-	}
-
-	var ipStats []ipStat
-	var ips []string
-	for _, row := range rows {
-		ip := fmt.Sprintf("%v", row["ip"])
-		if ip == "" || ip == "<nil>" {
-			continue
-		}
-		ipStats = append(ipStats, ipStat{
-			IP:           ip,
-			RequestCount: toInt64(row["request_count"]),
-			UserCount:    toInt64(row["user_count"]),
-		})
-		ips = append(ips, ip)
-	}
-
-	geoResults := LookupIPGeoBatch(ips)
-
-	// Step 3: Aggregate by country, province, city
-	type countryAgg struct {
-		CountryCode  string
-		IPCount      int64
-		RequestCount int64
-		UserCount    int64
-	}
-	type provinceAgg struct {
-		Country      string
-		CountryCode  string
-		IPCount      int64
-		RequestCount int64
-		UserCount    int64
-	}
-	type cityAgg struct {
-		Country      string
-		CountryCode  string
-		Region       string
-		City         string
-		IPCount      int64
-		RequestCount int64
-		UserCount    int64
-	}
-
-	byCountry := map[string]*countryAgg{}
-	byProvince := map[string]*provinceAgg{}
-	byCity := map[string]*cityAgg{}
-
-	var sampledIPs int64
-	var sampledRequests int64
-	var domesticRequests int64
-	var overseasRequests int64
-
-	for _, stat := range ipStats {
-		geo := geoResults[stat.IP]
-		country := geo.Country
-		countryCode := geo.CountryCode
-		region := geo.Region
-		city := geo.City
-
-		if !geo.Success || country == "" {
-			country = "未知"
-			countryCode = "XX"
-		}
-
-		sampledIPs++
-		sampledRequests += stat.RequestCount
-
-		// Domestic vs overseas
-		if domesticCountryCodes[countryCode] {
-			domesticRequests += stat.RequestCount
-		} else {
-			overseasRequests += stat.RequestCount
-		}
-
-		// By country
-		if _, ok := byCountry[country]; !ok {
-			byCountry[country] = &countryAgg{CountryCode: countryCode}
-		}
-		byCountry[country].IPCount++
-		byCountry[country].RequestCount += stat.RequestCount
-		byCountry[country].UserCount += stat.UserCount
-
-		// By province (Chinese mainland only)
-		if countryCode == "CN" && region != "" {
-			if _, ok := byProvince[region]; !ok {
-				byProvince[region] = &provinceAgg{Country: country, CountryCode: countryCode}
-			}
-			byProvince[region].IPCount++
-			byProvince[region].RequestCount += stat.RequestCount
-			byProvince[region].UserCount += stat.UserCount
-		}
-
-		// By city
-		if city != "" {
-			cityKey := fmt.Sprintf("%s:%s:%s", country, region, city)
-			if _, ok := byCity[cityKey]; !ok {
-				byCity[cityKey] = &cityAgg{Country: country, CountryCode: countryCode, Region: region, City: city}
-			}
-			byCity[cityKey].IPCount++
-			byCity[cityKey].RequestCount += stat.RequestCount
-			byCity[cityKey].UserCount += stat.UserCount
-		}
-	}
-
+	byCountry, sampledIPs, sampledRequests := aggregateIPSampleByCountry(rows)
 	coveragePct := float64(0)
 	if totalRequests > 0 {
 		coveragePct = math.Round(float64(sampledRequests)/float64(totalRequests)*10000) / 100
 	}
-
-	// Step 4: Convert to sorted lists
-	countryList := make([]map[string]interface{}, 0, len(byCountry))
-	for name, agg := range byCountry {
-		pct := float64(0)
-		if sampledRequests > 0 {
-			pct = float64(agg.RequestCount) / float64(sampledRequests) * 100
-		}
-		countryList = append(countryList, map[string]interface{}{
-			"country":       name,
-			"country_code":  agg.CountryCode,
-			"ip_count":      agg.IPCount,
-			"request_count": agg.RequestCount,
-			"user_count":    agg.UserCount,
-			"percentage":    math.Round(pct*100) / 100,
-		})
-	}
-	sortByRequestCount(countryList)
-
-	provinceList := make([]map[string]interface{}, 0, len(byProvince))
-	for name, agg := range byProvince {
-		pct := float64(0)
-		if sampledRequests > 0 {
-			pct = float64(agg.RequestCount) / float64(sampledRequests) * 100
-		}
-		provinceList = append(provinceList, map[string]interface{}{
-			"country":       agg.Country,
-			"country_code":  agg.CountryCode,
-			"region":        name,
-			"ip_count":      agg.IPCount,
-			"request_count": agg.RequestCount,
-			"user_count":    agg.UserCount,
-			"percentage":    math.Round(pct*100) / 100,
-		})
-	}
-	sortByRequestCount(provinceList)
-
-	cityList := make([]map[string]interface{}, 0, len(byCity))
-	for _, agg := range byCity {
-		pct := float64(0)
-		if sampledRequests > 0 {
-			pct = float64(agg.RequestCount) / float64(sampledRequests) * 100
-		}
-		cityList = append(cityList, map[string]interface{}{
-			"country":       agg.Country,
-			"country_code":  agg.CountryCode,
-			"region":        agg.Region,
-			"city":          agg.City,
-			"ip_count":      agg.IPCount,
-			"request_count": agg.RequestCount,
-			"user_count":    agg.UserCount,
-			"percentage":    math.Round(pct*100) / 100,
-		})
-	}
-	sortByRequestCount(cityList)
-
-	// Domestic/overseas percentage
-	domesticPct := float64(0)
-	overseasPct := float64(0)
-	if sampledRequests > 0 {
-		domesticPct = math.Round(float64(domesticRequests)/float64(sampledRequests)*10000) / 100
-		overseasPct = math.Round(float64(overseasRequests)/float64(sampledRequests)*10000) / 100
-	}
-
 	result := map[string]interface{}{
-		"total_ips":           totalIPs,
+		"total_ips":           toInt64(statsRow["total_ips"]),
 		"total_requests":      totalRequests,
 		"sampled_ip_limit":    ipDistributionSampleLimit,
 		"sampled_ips":         sampledIPs,
 		"sampled_requests":    sampledRequests,
 		"coverage_percentage": coveragePct,
-		"geo_available":       geoAvailable,
-		"domestic_percentage": domesticPct,
-		"overseas_percentage": overseasPct,
-		"by_country":          countryList,
-		"by_province":         provinceList,
-		"top_cities":          cityList,
+		"geo_available":       IsIPGeoAvailable(),
+		"by_country":          byCountry,
 		"snapshot_time":       time.Now().Unix(),
 	}
 	cm.Set(cacheKey, result, 5*time.Minute)
 	return result, nil
+}
+
+// aggregateIPSampleByCountry looks up each sampled IP and folds the sample
+// into countries, sorted by requests. Countries are keyed by ISO code; IPs the
+// GeoIP database cannot place are one "未知" (XX) row. user_count adds up each
+// IP's distinct users, so a user seen on two IPs in a country counts twice.
+func aggregateIPSampleByCountry(rows []map[string]interface{}) ([]map[string]interface{}, int64, int64) {
+	type ipStat struct {
+		ip                  string
+		requests, userCount int64
+	}
+	stats := make([]ipStat, 0, len(rows))
+	ips := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ip := fmt.Sprintf("%v", row["ip"])
+		if ip == "" || ip == "<nil>" {
+			continue
+		}
+		stats = append(stats, ipStat{ip: ip, requests: toInt64(row["request_count"]), userCount: toInt64(row["user_count"])})
+		ips = append(ips, ip)
+	}
+	geo := map[string]IPGeoInfo{}
+	if len(ips) > 0 {
+		geo = LookupIPGeoBatch(ips)
+	}
+
+	type countryAgg struct {
+		name, code                   string
+		ipCount, requests, userCount int64
+	}
+	byCode := map[string]*countryAgg{}
+	var sampledIPs, sampledRequests int64
+	for _, stat := range stats {
+		info := geo[stat.ip]
+		name, code := info.Country, info.CountryCode
+		if !info.Success || name == "" {
+			name, code = "未知", "XX"
+		}
+		key := code
+		if key == "" {
+			key = name
+		}
+		agg, ok := byCode[key]
+		if !ok {
+			agg = &countryAgg{name: name, code: code}
+			byCode[key] = agg
+		}
+		agg.ipCount++
+		agg.requests += stat.requests
+		agg.userCount += stat.userCount
+		sampledIPs++
+		sampledRequests += stat.requests
+	}
+
+	countries := make([]map[string]interface{}, 0, len(byCode))
+	for _, agg := range byCode {
+		pct := float64(0)
+		if sampledRequests > 0 {
+			pct = math.Round(float64(agg.requests)/float64(sampledRequests)*10000) / 100
+		}
+		countries = append(countries, map[string]interface{}{
+			"country":       agg.name,
+			"country_code":  agg.code,
+			"ip_count":      agg.ipCount,
+			"request_count": agg.requests,
+			"user_count":    agg.userCount,
+			"percentage":    pct,
+		})
+	}
+	sortByRequestCount(countries)
+	return countries, sampledIPs, sampledRequests
 }
 
 // sortByRequestCount sorts a slice of maps by request_count descending using sort.Slice
