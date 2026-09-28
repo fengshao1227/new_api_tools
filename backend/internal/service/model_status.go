@@ -12,20 +12,8 @@ import (
 
 // Constants for model status
 var (
-	AvailableTimeWindows = []string{"1h", "6h", "12h", "24h"}
-	DefaultTimeWindow    = "24h"
-	AvailableThemes      = []string{
-		"daylight", "obsidian", "minimal", "neon", "forest", "ocean", "terminal",
-		"cupertino", "material", "openai", "anthropic", "vercel", "linear",
-		"stripe", "github", "discord", "tesla",
-	}
-	DefaultTheme = "daylight"
-	// LegacyThemeMap maps old theme names to valid ones
-	LegacyThemeMap = map[string]string{
-		"light":  "daylight",
-		"dark":   "obsidian",
-		"system": "daylight",
-	}
+	AvailableTimeWindows      = []string{"1h", "6h", "12h", "24h"}
+	DefaultTimeWindow         = "24h"
 	AvailableRefreshIntervals = []int{0, 30, 60, 120, 300}
 	AvailableSortModes        = []string{"default", "availability", "custom"}
 )
@@ -425,16 +413,6 @@ func (s *ModelStatusService) GetConfig() map[string]interface{} {
 		timeWindow = DefaultTimeWindow
 	}
 
-	var theme string
-	found, _ = cm.GetJSON("model_status:theme", &theme)
-	if !found {
-		theme = DefaultTheme
-	}
-	// Map legacy theme names to valid ones
-	if mapped, ok := LegacyThemeMap[theme]; ok {
-		theme = mapped
-	}
-
 	var refreshInterval int
 	found, _ = cm.GetJSON("model_status:refresh_interval", &refreshInterval)
 	if !found {
@@ -458,13 +436,11 @@ func (s *ModelStatusService) GetConfig() map[string]interface{} {
 
 	return map[string]interface{}{
 		"time_window":      timeWindow,
-		"theme":            theme,
 		"refresh_interval": refreshInterval,
 		"sort_mode":        sortMode,
 		"custom_order":     customOrder,
 		"selected_models":  s.GetSelectedModels(),
 		"custom_groups":    customGroups,
-		"site_title":       s.GetSiteTitle(),
 	}
 }
 
@@ -472,12 +448,6 @@ func (s *ModelStatusService) GetConfig() map[string]interface{} {
 func (s *ModelStatusService) SetTimeWindow(window string) {
 	cm := cache.Get()
 	cm.Set("model_status:time_window", window, 0)
-}
-
-// SetTheme saves theme to cache
-func (s *ModelStatusService) SetTheme(theme string) {
-	cm := cache.Get()
-	cm.Set("model_status:theme", theme, 0)
 }
 
 // SetRefreshInterval saves refresh interval to cache
@@ -513,21 +483,4 @@ func (s *ModelStatusService) GetCustomGroups() []map[string]interface{} {
 func (s *ModelStatusService) SetCustomGroups(groups []map[string]interface{}) {
 	cm := cache.Get()
 	cm.Set("model_status:custom_groups", groups, 0) // no expiry
-}
-
-// GetSiteTitle returns the custom site title
-func (s *ModelStatusService) GetSiteTitle() string {
-	cm := cache.Get()
-	var title string
-	found, _ := cm.GetJSON("model_status:site_title", &title)
-	if found {
-		return title
-	}
-	return ""
-}
-
-// SetSiteTitle saves the custom site title
-func (s *ModelStatusService) SetSiteTitle(title string) {
-	cm := cache.Get()
-	cm.Set("model_status:site_title", title, 0)
 }

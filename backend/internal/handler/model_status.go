@@ -31,9 +31,6 @@ func RegisterModelStatusRoutes(r *gin.RouterGroup) {
 		g.PUT("/config/time-window", SetTimeWindowConfig)
 		g.PUT("/config/window", SetTimeWindowConfig)
 		g.POST("/config/window", SetTimeWindowConfig)
-		g.GET("/config/theme", GetThemeConfig)
-		g.PUT("/config/theme", SetThemeConfig)
-		g.POST("/config/theme", SetThemeConfig)
 		g.GET("/config/refresh-interval", GetRefreshIntervalConfig)
 		g.PUT("/config/refresh-interval", SetRefreshIntervalConfig)
 		g.PUT("/config/refresh", SetRefreshIntervalConfig)
@@ -46,9 +43,6 @@ func RegisterModelStatusRoutes(r *gin.RouterGroup) {
 		g.GET("/config/groups", GetCustomGroupsConfig)
 		g.PUT("/config/groups", SetCustomGroupsConfig)
 		g.POST("/config/groups", SetCustomGroupsConfig)
-		g.GET("/config/site-title", GetSiteTitleConfig)
-		g.PUT("/config/site-title", SetSiteTitleConfig)
-		g.POST("/config/site-title", SetSiteTitleConfig)
 		g.GET("/token-groups", GetTokenGroupsForModelStatus)
 	}
 }
@@ -141,12 +135,10 @@ func GetSelectedModels(c *gin.Context) {
 		"success":          true,
 		"data":             config["selected_models"],
 		"time_window":      config["time_window"],
-		"theme":            config["theme"],
 		"refresh_interval": config["refresh_interval"],
 		"sort_mode":        config["sort_mode"],
 		"custom_order":     config["custom_order"],
 		"custom_groups":    config["custom_groups"],
-		"site_title":       config["site_title"],
 	})
 }
 
@@ -205,51 +197,6 @@ func SetTimeWindowConfig(c *gin.Context) {
 		"success":     true,
 		"time_window": req.TimeWindow,
 		"message":     "Time window updated",
-	})
-}
-
-// GET /config/theme
-func GetThemeConfig(c *gin.Context) {
-	svc := service.NewModelStatusService()
-	config := svc.GetConfig()
-	c.JSON(http.StatusOK, gin.H{
-		"success":          true,
-		"theme":            config["theme"],
-		"available_themes": service.AvailableThemes,
-	})
-}
-
-// PUT /config/theme
-func SetThemeConfig(c *gin.Context) {
-	var req struct {
-		Theme string `json:"theme"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid request", err.Error()))
-		return
-	}
-	// Map legacy theme names to valid ones
-	theme := req.Theme
-	if mapped, ok := service.LegacyThemeMap[theme]; ok {
-		theme = mapped
-	}
-	valid := false
-	for _, t := range service.AvailableThemes {
-		if t == theme {
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid theme", ""))
-		return
-	}
-	svc := service.NewModelStatusService()
-	svc.SetTheme(theme)
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"theme":   theme,
-		"message": "Theme updated",
 	})
 }
 
@@ -390,32 +337,5 @@ func GetTokenGroupsForModelStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    groups,
-	})
-}
-
-// GET /config/site-title
-func GetSiteTitleConfig(c *gin.Context) {
-	svc := service.NewModelStatusService()
-	c.JSON(http.StatusOK, gin.H{
-		"success":    true,
-		"site_title": svc.GetSiteTitle(),
-	})
-}
-
-// PUT /config/site-title
-func SetSiteTitleConfig(c *gin.Context) {
-	var req struct {
-		SiteTitle string `json:"site_title"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid request", err.Error()))
-		return
-	}
-	svc := service.NewModelStatusService()
-	svc.SetSiteTitle(req.SiteTitle)
-	c.JSON(http.StatusOK, gin.H{
-		"success":    true,
-		"site_title": req.SiteTitle,
-		"message":    "Site title updated",
 	})
 }

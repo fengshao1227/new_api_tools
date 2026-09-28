@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import { cn } from '../lib/utils'
-import { RefreshCw, Loader2, Timer, ChevronDown, Settings2, Check, Clock, Palette, Moon, Sun, Minimize2, Maximize2, Zap, Terminal, Leaf, Droplets, X, Command, LayoutGrid, Bot, MessageSquareQuote, Triangle, Sparkles, CreditCard, GitBranch, Gamepad2, Rocket, Brain, ArrowUpDown, GripVertical, Search, Filter, Layers, Plus, Pencil, Trash2, FolderPlus, Tag, KeyRound } from 'lucide-react'
+import { RefreshCw, Loader2, Timer, ChevronDown, Settings2, Check, Clock, Minimize2, Maximize2, X, Brain, ArrowUpDown, GripVertical, Search, Filter, Layers, Plus, Pencil, Trash2, FolderPlus, Tag, KeyRound } from 'lucide-react'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -295,27 +295,6 @@ const TIME_WINDOWS = [
   { value: '24h', label: '24小时', slots: 24 },
 ]
 
-// Theme options
-const THEMES = [
-  { id: 'daylight', name: '日光', nameEn: 'Daylight', icon: Sun, description: '明亮清新的浅色', preview: 'bg-slate-100' },
-  { id: 'obsidian', name: '黑曜石', nameEn: 'Obsidian', icon: Moon, description: '经典深色，专业稳重', preview: 'bg-[#0d1117]' },
-  { id: 'minimal', name: '极简', nameEn: 'Minimal', icon: Minimize2, description: '极度精简，适合嵌入', preview: 'bg-white' },
-  { id: 'neon', name: '霓虹', nameEn: 'Neon', icon: Zap, description: '赛博朋克，科技感', preview: 'bg-black' },
-  { id: 'forest', name: '森林', nameEn: 'Forest', icon: Leaf, description: '深邃自然的森林色调', preview: 'bg-[#022c22]' },
-  { id: 'ocean', name: '海洋', nameEn: 'Ocean', icon: Droplets, description: '宁静深邃的海洋蓝', preview: 'bg-[#0b1121]' },
-  { id: 'terminal', name: '终端', nameEn: 'Terminal', icon: Terminal, description: '复古极客风格', preview: 'bg-black border border-green-500' },
-  { id: 'cupertino', name: 'Apple', nameEn: 'Apple', icon: Command, description: '致敬 Apple 设计风格', preview: 'bg-[#f5f5f7]' },
-  { id: 'material', name: 'Google', nameEn: 'Google', icon: LayoutGrid, description: '致敬 Google Material', preview: 'bg-[#f0f4f8]' },
-  { id: 'openai', name: 'OpenAI', nameEn: 'OpenAI', icon: Bot, description: '致敬 OpenAI 设计风格', preview: 'bg-[#343541]' },
-  { id: 'anthropic', name: 'Claude', nameEn: 'Claude', icon: MessageSquareQuote, description: '致敬 Claude 设计风格', preview: 'bg-[#f4f1ea]' },
-  { id: 'vercel', name: 'Vercel', nameEn: 'Vercel', icon: Triangle, description: 'Geist 风格，极致黑白', preview: 'bg-black radial-gradient(#333 1px, transparent 1px)' },
-  { id: 'linear', name: 'Linear', nameEn: 'Linear', icon: Sparkles, description: '流光风格，深色质感', preview: 'bg-[#0f1015]' },
-  { id: 'stripe', name: 'Stripe', nameEn: 'Stripe', icon: CreditCard, description: '现代支付美学', preview: 'bg-white' },
-  { id: 'github', name: 'GitHub', nameEn: 'GitHub', icon: GitBranch, description: '开发者之魂', preview: 'bg-[#0d1117]' },
-  { id: 'discord', name: 'Discord', nameEn: 'Discord', icon: Gamepad2, description: '游戏社区风格', preview: 'bg-[#313338]' },
-  { id: 'tesla', name: 'Tesla', nameEn: 'Tesla', icon: Rocket, description: '工业未来风', preview: 'bg-black' },
-]
-
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString('zh-CN', {
     hour: '2-digit',
@@ -356,7 +335,6 @@ interface ModelWithStats {
 const SELECTED_MODELS_KEY = 'model_status_selected_models'
 const REFRESH_INTERVAL_KEY = 'model_status_refresh_interval'
 const TIME_WINDOW_KEY = 'model_status_time_window'
-const THEME_KEY = 'model_status_theme'
 const SORT_MODE_KEY = 'model_status_sort_mode'
 const CUSTOM_ORDER_KEY = 'model_status_custom_order'
 // Note: MODEL_GROUP_KEY is defined alongside MODEL_GROUPS above
@@ -383,13 +361,6 @@ export function ModelStatusMonitor() {
     return saved || '24h'
   })
 
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem(THEME_KEY)
-    // Validate saved theme exists, fallback for legacy values (light/dark/system)
-    if (saved && THEMES.find(t => t.id === saved)) return saved
-    return 'daylight'
-  })
-
   const [refreshInterval, setRefreshInterval] = useState(() => {
     const saved = localStorage.getItem(REFRESH_INTERVAL_KEY)
     return saved ? parseInt(saved, 10) : 60
@@ -409,7 +380,6 @@ export function ModelStatusMonitor() {
   const [showModelSelector, setShowModelSelector] = useState(false)
   const [showIntervalDropdown, setShowIntervalDropdown] = useState(false)
   const [showWindowDropdown, setShowWindowDropdown] = useState(false)
-  const [showThemeDropdown, setShowThemeDropdown] = useState(false)
   const [modelSearchQuery, setModelSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [groupFilter, setGroupFilter] = useState(() => {
@@ -419,13 +389,10 @@ export function ModelStatusMonitor() {
   const [customGroups, setCustomGroups] = useState<CustomModelGroup[]>([])
   const [tokenGroups, setTokenGroups] = useState<TokenGroup[]>([])
   const [showGroupManager, setShowGroupManager] = useState(false)
-  const [siteTitle, setSiteTitle] = useState('')
-  const [showSiteTitleInput, setShowSiteTitleInput] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const modelSelectorRef = useRef<HTMLDivElement>(null)
   const intervalDropdownRef = useRef<HTMLDivElement>(null)
   const windowDropdownRef = useRef<HTMLDivElement>(null)
-  const themeDropdownRef = useRef<HTMLDivElement>(null)
 
   const apiUrl = import.meta.env.VITE_API_URL || ''
 
@@ -438,7 +405,6 @@ export function ModelStatusMonitor() {
   useClickOutside(modelSelectorRef, () => setShowModelSelector(false), showModelSelector)
   useClickOutside(intervalDropdownRef, () => setShowIntervalDropdown(false), showIntervalDropdown)
   useClickOutside(windowDropdownRef, () => setShowWindowDropdown(false), showWindowDropdown)
-  useClickOutside(themeDropdownRef, () => setShowThemeDropdown(false), showThemeDropdown)
 
   // Fullscreen change listener
   useEffect(() => {
@@ -471,21 +437,6 @@ export function ModelStatusMonitor() {
       console.error('Failed to save time window:', error)
     }
   }, [apiUrl, getAuthHeaders])
-
-  // Save theme to backend cache
-  const saveThemeToBackend = useCallback(async (newTheme: string) => {
-    try {
-      await fetch(`${apiUrl}/api/model-status/config/theme`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ theme: newTheme }),
-      })
-      localStorage.setItem(THEME_KEY, newTheme)
-      showToast('success', `主题已切换为 ${THEMES.find(t => t.id === newTheme)?.name || newTheme}`)
-    } catch (error) {
-      console.error('Failed to save theme:', error)
-    }
-  }, [apiUrl, getAuthHeaders, showToast])
 
   // Save refresh interval to backend cache
   const saveRefreshIntervalToBackend = useCallback(async (interval: number) => {
@@ -548,12 +499,6 @@ export function ModelStatusMonitor() {
           setTimeWindow(data.time_window)
           localStorage.setItem(TIME_WINDOW_KEY, data.time_window)
         }
-        if (data.theme) {
-          // Validate theme exists, fallback to daylight for legacy values (light/dark/system)
-          const validTheme = THEMES.find(t => t.id === data.theme) ? data.theme : 'daylight'
-          setTheme(validTheme)
-          localStorage.setItem(THEME_KEY, validTheme)
-        }
         if (data.refresh_interval !== undefined && data.refresh_interval !== null) {
           setRefreshInterval(data.refresh_interval)
           setCountdown(data.refresh_interval)
@@ -570,10 +515,6 @@ export function ModelStatusMonitor() {
         // Load custom groups from backend
         if (data.custom_groups && Array.isArray(data.custom_groups)) {
           setCustomGroups(data.custom_groups as CustomModelGroup[])
-        }
-        // Load site title
-        if (data.site_title !== undefined) {
-          setSiteTitle(data.site_title || '')
         }
         return data.data || []
       }
@@ -858,20 +799,6 @@ export function ModelStatusMonitor() {
     }
   }, [apiUrl, getAuthHeaders])
 
-  // Save site title to backend
-  const saveSiteTitleToBackend = useCallback(async (title: string) => {
-    setSiteTitle(title)
-    try {
-      await fetch(`${apiUrl}/api/model-status/config/site-title`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ site_title: title }),
-      })
-    } catch (error) {
-      console.error('Failed to save site title:', error)
-    }
-  }, [apiUrl, getAuthHeaders])
-
   // Select all models in a group
   const selectGroupModels = useCallback((group: CustomModelGroup) => {
     const newModels = [...new Set([...selectedModels, ...group.models.filter(m => availableModels.some(a => a.model_name === m))])]
@@ -1129,56 +1056,6 @@ export function ModelStatusMonitor() {
                 )}
               </div>
 
-              {/* Theme Selector */}
-              <div className="relative" ref={themeDropdownRef}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowThemeDropdown(!showThemeDropdown)}
-                  className="h-9"
-                >
-                  <Palette className="h-4 w-4 mr-2" />
-                  {THEMES.find(t => t.id === theme)?.name || '主题'}
-                  <ChevronDown className="h-3 w-3 ml-1" />
-                </Button>
-
-                {showThemeDropdown && (
-                  <div className="absolute right-0 mt-1 w-56 bg-popover border rounded-md shadow-lg z-40">
-                    <div className="p-2 border-b">
-                      <p className="text-xs text-muted-foreground">嵌入页面主题</p>
-                    </div>
-                    <div className="p-1">
-                      {THEMES.map((t) => {
-                        const ThemeIcon = t.icon
-                        return (
-                          <button
-                            key={t.id}
-                            onClick={() => {
-                              setTheme(t.id)
-                              saveThemeToBackend(t.id)
-                              setShowThemeDropdown(false)
-                            }}
-                            className={cn(
-                              "w-full text-left px-3 py-2 text-sm rounded hover:bg-accent transition-colors flex items-center gap-3",
-                              theme === t.id && "bg-accent text-accent-foreground"
-                            )}
-                          >
-                            <div className={cn("w-6 h-6 rounded flex items-center justify-center", t.preview)}>
-                              <ThemeIcon className="h-3.5 w-3.5 text-white mix-blend-difference" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium">{t.name}</div>
-                              <div className="text-xs text-muted-foreground truncate">{t.description}</div>
-                            </div>
-                            {theme === t.id && <Check className="h-4 w-4 text-primary flex-shrink-0" />}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-
               {/* Model Selector */}
               <div className="relative" ref={modelSelectorRef}>
                 <Button
@@ -1396,46 +1273,6 @@ export function ModelStatusMonitor() {
                   <Maximize2 className="h-4 w-4" />
                 )}
               </Button>
-
-              {/* Site Title Setting */}
-              <div className="relative">
-                <Button
-                  variant={showSiteTitleInput ? 'default' : 'ghost'}
-                  size="sm"
-                  onClick={() => setShowSiteTitleInput(!showSiteTitleInput)}
-                  title="设置站点标题"
-                  className="h-9"
-                >
-                  <Pencil className="h-4 w-4 mr-2" />
-                  站点标题
-                </Button>
-                {showSiteTitleInput && (
-                  <div className="absolute right-0 mt-1 w-72 bg-popover border rounded-md shadow-lg z-50 p-3">
-                    <p className="text-xs text-muted-foreground mb-2">嵌入页面显示的标题（留空使用默认）</p>
-                    <input
-                      type="text"
-                      placeholder="例如：OpenAI-模型状态监控"
-                      value={siteTitle}
-                      onChange={(e) => setSiteTitle(e.target.value)}
-                      onBlur={() => saveSiteTitleToBackend(siteTitle)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          saveSiteTitleToBackend(siteTitle)
-                          setShowSiteTitleInput(false)
-                        }
-                        if (e.key === 'Escape') {
-                          setShowSiteTitleInput(false)
-                        }
-                      }}
-                      className="w-full h-8 px-3 text-sm bg-muted/50 border rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
-                      autoFocus
-                    />
-                    {siteTitle && (
-                      <p className="text-xs text-muted-foreground mt-2">预览: <span className="font-medium text-foreground">{siteTitle}</span></p>
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         </CardContent>
