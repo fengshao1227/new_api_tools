@@ -114,9 +114,6 @@ func main() {
 		handler.RegisterLinuxDoRoutes(api)
 	}
 
-	// Public embed routes (no auth)
-	handler.RegisterModelStatusEmbedRoutes(r)
-
 	// ========== 7. Background tasks ==========
 
 	// IP recording enforcement: check every 10 minutes, enable if any user disabled it.

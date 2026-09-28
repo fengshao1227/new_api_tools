@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/new-api-tools/backend/internal/models"
 	"github.com/new-api-tools/backend/internal/service"
 )
+
+// maxModelStatusBatch caps how many models one status/multiple or status/batch
+// call may ask for; each model is its own query against the logs table.
+const maxModelStatusBatch = 100
 
 // RegisterModelStatusRoutes registers /api/model-status endpoints (auth required)
 func RegisterModelStatusRoutes(r *gin.RouterGroup) {
@@ -45,39 +50,6 @@ func RegisterModelStatusRoutes(r *gin.RouterGroup) {
 		g.PUT("/config/site-title", SetSiteTitleConfig)
 		g.POST("/config/site-title", SetSiteTitleConfig)
 		g.GET("/token-groups", GetTokenGroupsForModelStatus)
-	}
-
-}
-
-// RegisterModelStatusEmbedRoutes registers public embed endpoints (no auth)
-// Supports both /api/embed/model-status/... and /api/model-status/embed/... paths
-func RegisterModelStatusEmbedRoutes(r *gin.Engine) {
-	// Original embed path: /api/embed/model-status/...
-	g := r.Group("/api/embed/model-status")
-	{
-		g.GET("/time-windows", GetTimeWindows)
-		g.GET("/models", GetAvailableModels)
-		g.GET("/status/:model_name", GetSingleModelStatus)
-		g.POST("/status/multiple", GetMultipleModelsStatusHandler)
-		g.POST("/status/batch", GetMultipleModelsStatusHandler)
-		g.GET("/status/all", GetAllModelsStatusHandler)
-		g.GET("/config", GetEmbedConfig)
-		g.GET("/config/selected", GetSelectedModels)
-		g.GET("/token-groups", GetTokenGroupsForModelStatus)
-	}
-
-	// Compat embed path: /api/model-status/embed/... (used by embed.html frontend)
-	e := r.Group("/api/model-status/embed")
-	{
-		e.GET("/time-windows", GetTimeWindows)
-		e.GET("/models", GetAvailableModels)
-		e.GET("/status/:model_name", GetSingleModelStatus)
-		e.POST("/status/multiple", GetMultipleModelsStatusHandler)
-		e.POST("/status/batch", GetMultipleModelsStatusHandler)
-		e.GET("/status/all", GetAllModelsStatusHandler)
-		e.GET("/config", GetEmbedConfig)
-		e.GET("/config/selected", GetSelectedModels)
-		e.GET("/token-groups", GetTokenGroupsForModelStatus)
 	}
 }
 
@@ -120,6 +92,11 @@ func GetMultipleModelsStatusHandler(c *gin.Context) {
 	var modelNames []string
 	if err := c.ShouldBindJSON(&modelNames); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Expected array of model names", err.Error()))
+		return
+	}
+	if len(modelNames) > maxModelStatusBatch {
+		c.JSON(http.StatusBadRequest, models.ErrorResp("TOO_MANY_MODELS",
+			fmt.Sprintf("At most %d models per request, got %d", maxModelStatusBatch, len(modelNames)), ""))
 		return
 	}
 	window := c.DefaultQuery("window", service.DefaultTimeWindow)
@@ -372,13 +349,6 @@ func SetCustomOrderConfig(c *gin.Context) {
 		"custom_order": req.CustomOrder,
 		"message":      "Custom order updated",
 	})
-}
-
-// GET /config (embed)
-func GetEmbedConfig(c *gin.Context) {
-	svc := service.NewModelStatusService()
-	config := svc.GetEmbedConfig()
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": config})
 }
 
 // GET /config/groups

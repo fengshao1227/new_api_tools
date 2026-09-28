@@ -14,7 +14,7 @@ import (
 var (
 	AvailableTimeWindows = []string{"1h", "6h", "12h", "24h"}
 	DefaultTimeWindow    = "24h"
-	AvailableThemes = []string{
+	AvailableThemes      = []string{
 		"daylight", "obsidian", "minimal", "neon", "forest", "ocean", "terminal",
 		"cupertino", "material", "openai", "anthropic", "vercel", "linear",
 		"stripe", "github", "discord", "tesla",
@@ -530,14 +530,4 @@ func (s *ModelStatusService) GetSiteTitle() string {
 func (s *ModelStatusService) SetSiteTitle(title string) {
 	cm := cache.Get()
 	cm.Set("model_status:site_title", title, 0)
-}
-
-// GetEmbedConfig returns embed page configuration
-func (s *ModelStatusService) GetEmbedConfig() map[string]interface{} {
-	config := s.GetConfig()
-	config["available_time_windows"] = AvailableTimeWindows
-	config["available_themes"] = AvailableThemes
-	config["available_refresh_intervals"] = AvailableRefreshIntervals
-	config["available_sort_modes"] = AvailableSortModes
-	return config
 }

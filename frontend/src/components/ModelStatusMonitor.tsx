@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import { cn } from '../lib/utils'
-import { RefreshCw, Loader2, Timer, ChevronDown, Settings2, Check, Clock, Palette, Moon, Sun, Minimize2, Maximize2, Zap, Terminal, Leaf, Droplets, HelpCircle, Copy, X, Command, LayoutGrid, Bot, MessageSquareQuote, Triangle, Sparkles, CreditCard, GitBranch, Gamepad2, Rocket, Brain, ArrowUpDown, GripVertical, Search, Filter, Layers, Plus, Pencil, Trash2, FolderPlus, Tag, KeyRound } from 'lucide-react'
+import { RefreshCw, Loader2, Timer, ChevronDown, Settings2, Check, Clock, Palette, Moon, Sun, Minimize2, Maximize2, Zap, Terminal, Leaf, Droplets, X, Command, LayoutGrid, Bot, MessageSquareQuote, Triangle, Sparkles, CreditCard, GitBranch, Gamepad2, Rocket, Brain, ArrowUpDown, GripVertical, Search, Filter, Layers, Plus, Pencil, Trash2, FolderPlus, Tag, KeyRound } from 'lucide-react'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -38,9 +38,10 @@ interface ModelStatus {
   slot_data: SlotStatus[]
 }
 
-interface ModelStatusMonitorProps {
-  isEmbed?: boolean
-}
+// 后端 status/batch 每次最多接收的模型数，超出时分批请求
+const MODEL_STATUS_BATCH_LIMIT = 100
+
+const API_PREFIX = '/api/model-status'
 
 const STATUS_COLORS = {
   green: 'bg-green-500',
@@ -366,7 +367,7 @@ type SortMode = 'default' | 'availability' | 'custom'
 // Status filter type
 type StatusFilter = 'all' | 'green' | 'yellow' | 'red'
 
-export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps) {
+export function ModelStatusMonitor() {
   const { token } = useAuth()
   const { showToast } = useToast()
 
@@ -409,7 +410,6 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
   const [showIntervalDropdown, setShowIntervalDropdown] = useState(false)
   const [showWindowDropdown, setShowWindowDropdown] = useState(false)
   const [showThemeDropdown, setShowThemeDropdown] = useState(false)
-  const [showEmbedHelp, setShowEmbedHelp] = useState(false)
   const [modelSearchQuery, setModelSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [groupFilter, setGroupFilter] = useState(() => {
@@ -429,19 +429,10 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
 
   const apiUrl = import.meta.env.VITE_API_URL || ''
 
-  const getAuthHeaders = useCallback((): Record<string, string> => {
-    if (isEmbed) {
-      return { 'Content-Type': 'application/json' }
-    }
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    }
-  }, [token, isEmbed])
-
-  const getApiPrefix = useCallback(() => {
-    return isEmbed ? '/api/model-status/embed' : '/api/model-status'
-  }, [isEmbed])
+  const getAuthHeaders = useCallback((): Record<string, string> => ({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+  }), [token])
 
   // Click outside handlers
   useClickOutside(modelSelectorRef, () => setShowModelSelector(false), showModelSelector)
@@ -602,7 +593,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
   // 加载令牌分组列表
   const fetchTokenGroups = useCallback(async () => {
     try {
-      const response = await fetch(`${apiUrl}${getApiPrefix()}/token-groups`, {
+      const response = await fetch(`${apiUrl}${API_PREFIX}/token-groups`, {
         headers: getAuthHeaders(),
       })
       const data = await response.json()
@@ -612,7 +603,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
     } catch (error) {
       console.error('Failed to fetch token groups:', error)
     }
-  }, [apiUrl, getApiPrefix, getAuthHeaders])
+  }, [apiUrl, getAuthHeaders])
 
   // Update refresh interval ref
   useEffect(() => {
@@ -623,7 +614,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
   // Fetch available models and load config
   const fetchAvailableModels = useCallback(async () => {
     try {
-      const response = await fetch(`${apiUrl}${getApiPrefix()}/models`, {
+      const response = await fetch(`${apiUrl}${API_PREFIX}/models`, {
         headers: getAuthHeaders(),
       })
       const data = await response.json()
@@ -662,7 +653,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
       setLoading(false)
       setInitialLoading(false)
     }
-  }, [apiUrl, getApiPrefix, getAuthHeaders, loadConfigFromBackend, saveSelectedModelsToBackend, fetchTokenGroups])
+  }, [apiUrl, getAuthHeaders, loadConfigFromBackend, saveSelectedModelsToBackend, fetchTokenGroups])
 
   // Fetch model statuses
   // forceRefresh: bypass cache to get fresh data (used for manual refresh)
@@ -696,26 +687,30 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
     try {
       // Add no_cache=true when force refreshing to bypass backend cache
       const cacheParam = forceRefresh ? '&no_cache=true' : ''
-      const response = await fetch(`${apiUrl}${getApiPrefix()}/status/batch?window=${timeWindow}${cacheParam}`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(fetchSet),
-      })
-      const data = await response.json()
-      if (data.success) {
-        setModelStatuses(data.data ?? [])
-        setInitialLoading(false)
+      // 后端单次最多 MODEL_STATUS_BATCH_LIMIT 个模型，依次分批请求再合并
+      const statuses: ModelStatus[] = []
+      for (let i = 0; i < fetchSet.length; i += MODEL_STATUS_BATCH_LIMIT) {
+        const response = await fetch(`${apiUrl}${API_PREFIX}/status/batch?window=${timeWindow}${cacheParam}`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(fetchSet.slice(i, i + MODEL_STATUS_BATCH_LIMIT)),
+        })
+        const data = await response.json()
+        if (!data.success) {
+          throw new Error(data.error?.message || data.message || 'status batch failed')
+        }
+        statuses.push(...(data.data ?? []))
       }
+      setModelStatuses(statuses)
+      setInitialLoading(false)
     } catch (error) {
       console.error('Failed to fetch model statuses:', error)
-      if (!isEmbed) {
-        showToast('error', '获取模型状态失败')
-      }
+      showToast('error', '获取模型状态失败')
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [apiUrl, getApiPrefix, getAuthHeaders, selectedModels, timeWindow, isEmbed, showToast, groupFilter, tokenGroups, availableModels.length])
+  }, [apiUrl, getAuthHeaders, selectedModels, timeWindow, showToast, groupFilter, tokenGroups, availableModels.length])
 
   // Initial load
   useEffect(() => {
@@ -994,7 +989,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
 
   if (loading && modelStatuses.length === 0) {
     return (
-      <div className={cn("space-y-6", isEmbed && "p-4")}>
+      <div className="space-y-6">
         {/* Skeleton Header */}
         <Card>
           <CardContent className="p-4">
@@ -1059,7 +1054,7 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
   }
 
   return (
-    <div className={cn("space-y-5", isEmbed && "p-4")}>
+    <div className="space-y-5">
       {/* Header */}
       <Card className="overflow-visible border-0 shadow-md">
         <div className="bg-gradient-to-r from-primary/5 via-primary/3 to-transparent">
@@ -1441,27 +1436,11 @@ export function ModelStatusMonitor({ isEmbed = false }: ModelStatusMonitorProps)
                   </div>
                 )}
               </div>
-
-              {/* Embed Help Button */}
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setShowEmbedHelp(true)}
-                title="嵌入说明"
-                className="h-9 w-9"
-              >
-                <HelpCircle className="h-4 w-4" />
-              </Button>
             </div>
           </div>
         </CardContent>
         </div>
       </Card>
-
-      {/* Embed Help Modal */}
-      {showEmbedHelp && (
-        <EmbedHelpModal onClose={() => setShowEmbedHelp(false)} />
-      )}
 
       {/* Group Filter + Status Filter */}
       {modelStatuses.length > 0 && (
@@ -2087,210 +2066,6 @@ function SortableModelCard({ model }: { model: ModelStatus }) {
         model={model}
         dragHandleProps={listeners}
       />
-    </div>
-  )
-}
-
-// Embed Help Modal Component
-function EmbedHelpModal({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = useState<string | null>(null)
-
-  // Get current origin for embed URL
-  const currentOrigin = window.location.origin
-  const embedPath = '/embed.html'
-  const embedUrl = `${currentOrigin}${embedPath}`
-
-  // Check if using IP address (recommend using domain with HTTPS)
-  const isIpAddress = /^https?:\/\/(\d{1,3}\.){3}\d{1,3}/.test(currentOrigin)
-  const isHttps = currentOrigin.startsWith('https://')
-
-  const codeExamples = {
-    basic: `<iframe 
-  src="${embedUrl}" 
-  width="100%" 
-  height="600" 
-  frameborder="0"
-  style="border-radius: 8px;"
-></iframe>`,
-    responsive: `<div style="position: relative; width: 100%; padding-bottom: 56.25%;">
-  <iframe 
-    src="${embedUrl}" 
-    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; border-radius: 8px;"
-  ></iframe>
-</div>`,
-    fullpage: `<!DOCTYPE html>
-<html>
-<head>
-  <title>模型状态监控</title>
-  <style>
-    body { margin: 0; padding: 0; }
-    iframe { width: 100vw; height: 100vh; border: none; }
-  </style>
-</head>
-<body>
-  <iframe src="${embedUrl}"></iframe>
-</body>
-</html>`,
-  }
-
-  const copyToClipboard = async (code: string, key: string) => {
-    try {
-      // Try modern clipboard API first
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(code)
-      } else {
-        // Fallback for HTTP or older browsers
-        const textArea = document.createElement('textarea')
-        textArea.value = code
-        textArea.style.position = 'fixed'
-        textArea.style.left = '-999999px'
-        textArea.style.top = '-999999px'
-        document.body.appendChild(textArea)
-        textArea.focus()
-        textArea.select()
-        document.execCommand('copy')
-        document.body.removeChild(textArea)
-      }
-      setCopied(key)
-      setTimeout(() => setCopied(null), 2000)
-    } catch (err) {
-      console.error('Failed to copy:', err)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-background border rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b">
-          <h2 className="text-lg font-semibold">使用 iframe 嵌入模型状态监控</h2>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* Content */}
-        <div className="p-4 space-y-6 overflow-y-auto max-h-[calc(90vh-120px)]">
-          {/* Security Warning for IP/HTTP */}
-          {(isIpAddress || !isHttps) && (
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-              <h3 className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-2">⚠️ 安全建议</h3>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                {isIpAddress && (
-                  <li>• 当前使用 IP 地址访问，建议配置域名以获得更好的兼容性</li>
-                )}
-                {!isHttps && (
-                  <li>• 当前使用 HTTP 协议，<strong>强烈建议</strong>使用 HTTPS 以确保数据安全</li>
-                )}
-                <li>• 示例：<code className="bg-muted px-1 rounded">https://your-domain.com{embedPath}</code></li>
-              </ul>
-            </div>
-          )}
-
-          {/* Embed URL */}
-          <div>
-            <h3 className="text-sm font-medium mb-2">嵌入地址</h3>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 bg-muted px-3 py-2 rounded text-sm break-all">
-                {embedUrl}
-              </code>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => copyToClipboard(embedUrl, 'url')}
-              >
-                {copied === 'url' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
-
-          {/* Features */}
-          <div>
-            <h3 className="text-sm font-medium mb-2">功能特点</h3>
-            <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-              <li>无需登录即可访问（公开嵌入模式）</li>
-              <li>支持多种主题风格（在主界面选择后自动同步）</li>
-              <li>自动刷新数据，实时监控模型状态</li>
-              <li>响应式设计，适配各种屏幕尺寸</li>
-            </ul>
-          </div>
-
-          {/* Basic Example */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium">基础嵌入</h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => copyToClipboard(codeExamples.basic, 'basic')}
-              >
-                {copied === 'basic' ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
-                复制
-              </Button>
-            </div>
-            <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-              <code>{codeExamples.basic}</code>
-            </pre>
-          </div>
-
-          {/* Responsive Example */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium">响应式嵌入（16:9 比例）</h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => copyToClipboard(codeExamples.responsive, 'responsive')}
-              >
-                {copied === 'responsive' ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
-                复制
-              </Button>
-            </div>
-            <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-              <code>{codeExamples.responsive}</code>
-            </pre>
-          </div>
-
-          {/* Full Page Example */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium">全屏页面</h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => copyToClipboard(codeExamples.fullpage, 'fullpage')}
-              >
-                {copied === 'fullpage' ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
-                复制
-              </Button>
-            </div>
-            <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-              <code>{codeExamples.fullpage}</code>
-            </pre>
-          </div>
-
-          {/* Tips */}
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
-            <h3 className="text-sm font-medium text-blue-600 dark:text-blue-400 mb-2">💡 提示</h3>
-            <ul className="text-sm text-muted-foreground space-y-1">
-              <li>• 在主界面选择的模型、主题、刷新间隔会自动同步到嵌入页面</li>
-              <li>• 嵌入页面使用独立的公开 API，不需要认证</li>
-              <li>• <strong>推荐使用域名 + HTTPS</strong> 方式部署，确保安全性和兼容性</li>
-              <li>• 部分浏览器可能阻止 HTTP iframe 嵌入到 HTTPS 页面</li>
-            </ul>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t">
-          <Button variant="outline" onClick={onClose}>
-            关闭
-          </Button>
-          <Button onClick={() => window.open(`${currentOrigin}${embedPath}`, '_blank')}>
-            预览嵌入页面
-          </Button>
-        </div>
-      </div>
     </div>
   )
 }
