@@ -38,17 +38,8 @@ func main() {
 	}
 	defer database.Close()
 
-	// Ensure indexes (background, with delay to reduce load)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.L.Error(fmt.Sprintf("索引创建 goroutine panic: %v", r))
-			}
-		}()
-		time.Sleep(2 * time.Second)
-		db := database.Get()
-		db.EnsureIndexes(true, 500*time.Millisecond)
-	}()
+	// No index DDL here: the Tool connects to the gateway's production database,
+	// so indexes are created by hand after an EXPLAIN review, never at startup.
 
 	// ========== 4. Initialize Redis cache ==========
 	if cfg.RedisConnString != "" {

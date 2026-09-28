@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/new-api-tools/backend/internal/database"
@@ -16,7 +15,6 @@ func RegisterSystemRoutes(r *gin.RouterGroup) {
 		g.POST("/scale/refresh", RefreshSystemScale)
 		g.GET("/warmup-status", GetWarmupStatus)
 		g.GET("/indexes", GetIndexStatus)
-		g.POST("/indexes/ensure", EnsureIndexes)
 	}
 }
 
@@ -119,21 +117,6 @@ func GetIndexStatus(c *gin.Context) {
 			"existing":  existing,
 			"missing":   total - existing,
 			"all_ready": existing == total,
-		},
-	})
-}
-
-// POST /api/system/indexes/ensure
-func EnsureIndexes(c *gin.Context) {
-	db := database.Get()
-
-	// Run index creation
-	db.EnsureIndexes(true, 500*time.Millisecond)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"message": "Index creation completed",
 		},
 	})
 }

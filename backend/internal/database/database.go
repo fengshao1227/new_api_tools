@@ -261,25 +261,6 @@ func (m *Manager) Execute(query string, args ...interface{}) (int64, error) {
 	return result.RowsAffected()
 }
 
-// ExecuteDDL runs a DDL statement (CREATE, ALTER, DROP)
-// For PostgreSQL, this uses a separate connection for CONCURRENTLY operations
-func (m *Manager) ExecuteDDL(query string) error {
-	if m.IsPG {
-		// PostgreSQL DDL with CONCURRENTLY needs its own connection
-		ctx := context.Background()
-		conn, err := m.DB.DB.Conn(ctx)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		_, err = conn.ExecContext(ctx, query)
-		return err
-	}
-
-	_, err := m.DB.Exec(query)
-	return err
-}
-
 // Placeholder returns the correct placeholder for the database engine.
 // MySQL and ClickHouse use ?, PostgreSQL uses $1, $2, etc.
 func (m *Manager) Placeholder(index int) string {
