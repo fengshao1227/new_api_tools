@@ -172,8 +172,8 @@ export function PanelWhitelist() {
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
-            白名单中的账号会从<strong className="text-foreground">充值记录、风控榜单、IP 分析、日志分析、令牌列表、用户列表、仪表盘排行</strong>等运营面板中过滤，
-            避免管理员/测试号干扰统计。与 AI 封禁白名单相互独立。
+            白名单中的账号会从<strong className="text-foreground">充值记录、任务日志、令牌列表、用户列表、仪表盘排行</strong>等运营面板中过滤，
+            避免管理员/测试号干扰统计。
           </p>
           <div className="flex flex-wrap gap-4 pt-1 text-foreground">
             <span>显式用户：<strong>{data?.user_ids?.length ?? 0}</strong></span>

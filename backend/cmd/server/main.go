@@ -110,8 +110,7 @@ func main() {
 		// Phase 2.6: Task Logs (任务日志 + 使用日志关联)
 		handler.RegisterTaskLogRoutes(api)
 
-		// Phase 3: AI AutoBan, LinuxDo Lookup
-		handler.RegisterAIAutoBanRoutes(api)
+		// Phase 3: LinuxDo Lookup
 		handler.RegisterLinuxDoRoutes(api)
 	}
 
@@ -120,7 +119,8 @@ func main() {
 
 	// ========== 7. Background tasks ==========
 
-	// IP recording enforcement: check every 10 minutes, enable if any user disabled it
+	// IP recording enforcement: check every 10 minutes, enable if any user disabled it.
+	// 保留：网关风控依赖 logs.ip，删除前须先让网关默认开启记录 IP。
 	stopIPEnforce := make(chan struct{})
 	go backgroundEnforceIPRecording(stopIPEnforce)
 

@@ -6,11 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/new-api-tools/backend/internal/cache"
 	"github.com/new-api-tools/backend/internal/database"
 )
 
-// RiskMonitoringService handles risk detection queries
+// RiskMonitoringService builds the read-only per-user risk analysis
 type RiskMonitoringService struct {
 	db    *database.Manager
 	logDB *database.Manager
@@ -19,63 +18,6 @@ type RiskMonitoringService struct {
 // NewRiskMonitoringService creates a new RiskMonitoringService
 func NewRiskMonitoringService() *RiskMonitoringService {
 	return &RiskMonitoringService{db: database.Get(), logDB: database.GetLog()}
-}
-
-// enrichUserInfo backfills username/display_name (preferring display_name) and
-// user_status onto log-derived leaderboard rows by querying the main users
-// table. Replaces an in-query JOIN so it works when logs live in a separate DB.
-func (s *RiskMonitoringService) enrichUserInfo(rows []map[string]interface{}) {
-	if len(rows) == 0 {
-		return
-	}
-	ids := make([]interface{}, 0, len(rows))
-	seen := make(map[int64]bool)
-	for _, r := range rows {
-		uid := toInt64(r["user_id"])
-		if uid > 0 && !seen[uid] {
-			seen[uid] = true
-			ids = append(ids, uid)
-		}
-	}
-	if len(ids) == 0 {
-		return
-	}
-
-	ph := make([]string, len(ids))
-	for i := range ids {
-		ph[i] = s.db.Placeholder(i + 1)
-	}
-	q := fmt.Sprintf("SELECT id, username, display_name, status FROM users WHERE id IN (%s) AND deleted_at IS NULL", strings.Join(ph, ","))
-	urows, err := s.db.Query(q, ids...)
-	if err != nil {
-		return
-	}
-	type uinfo struct {
-		name   string
-		status int64
-	}
-	byID := make(map[int64]uinfo, len(urows))
-	for _, ur := range urows {
-		name := fmt.Sprintf("%v", ur["display_name"])
-		if name == "" || name == "<nil>" {
-			name = fmt.Sprintf("%v", ur["username"])
-		}
-		byID[toInt64(ur["id"])] = uinfo{name: name, status: toInt64(ur["status"])}
-	}
-	for _, r := range rows {
-		info, ok := byID[toInt64(r["user_id"])]
-		if !ok {
-			// User missing from main DB → keep logs.username, default status.
-			if _, exists := r["user_status"]; !exists {
-				r["user_status"] = int64(0)
-			}
-			continue
-		}
-		if info.name != "" && info.name != "<nil>" {
-			r["username"] = info.name
-		}
-		r["user_status"] = info.status
-	}
 }
 
 func (s *RiskMonitoringService) enrichChannelNames(rows []map[string]interface{}) {
@@ -113,84 +55,6 @@ func (s *RiskMonitoringService) enrichChannelNames(rows []map[string]interface{}
 			row["channel_name"] = name
 		}
 	}
-}
-
-// GetLeaderboards returns usage leaderboards across multiple time windows
-func (s *RiskMonitoringService) GetLeaderboards(windows []string, limit int, sortBy string) (map[string]interface{}, error) {
-	cm := cache.Get()
-	cacheKey := fmt.Sprintf("risk:leaderboards:%s:%d:%s", strings.Join(windows, ","), limit, sortBy)
-	var cached map[string]interface{}
-	found, _ := cm.GetJSON(cacheKey, &cached)
-	if found {
-		return cached, nil
-	}
-
-	windowsData := map[string]interface{}{}
-
-	// Validate sortBy to prevent SQL injection via ORDER BY expression
-	orderBy := "request_count DESC"
-	if sortBy == "quota" {
-		orderBy = "quota_used DESC"
-	} else if sortBy == "failure_rate" {
-		orderBy = "failure_rate DESC, request_count DESC"
-	}
-
-	for _, window := range windows {
-		seconds, ok := WindowSeconds[window]
-		if !ok {
-			continue
-		}
-		now := time.Now().Unix()
-		startTime := now - seconds
-
-		// Aggregate from logs first (logs may live in a separate DB → no JOIN users).
-		// display_name / status come from the main DB in a second step below.
-		uniqueIPsExpr := s.logDB.CountDistinctNonEmpty("l.ip")
-		wlCond, wlArgs := PanelWhitelistNotInClause("l.user_id")
-		wlSQL := ""
-		if wlCond != "" {
-			wlSQL = " AND " + wlCond
-		}
-		query := s.logDB.RebindQuery(fmt.Sprintf(`
-			SELECT l.user_id as user_id,
-				COALESCE(NULLIF(MAX(l.username), ''), '') as username,
-				COUNT(*) as request_count,
-				SUM(CASE WHEN l.type = 5 THEN 1 ELSE 0 END) as failure_requests,
-				(SUM(CASE WHEN l.type = 5 THEN 1 ELSE 0 END) * 1.0) / NULLIF(COUNT(*), 0) as failure_rate,
-				COALESCE(SUM(l.quota), 0) as quota_used,
-				COALESCE(SUM(l.prompt_tokens), 0) as prompt_tokens,
-				COALESCE(SUM(l.completion_tokens), 0) as completion_tokens,
-				COALESCE(%s, 0) as unique_ips
-			FROM logs l
-			WHERE l.created_at >= ? AND l.created_at <= ?
-				AND l.type IN (2, 5)
-				AND l.user_id IS NOT NULL%s
-			GROUP BY l.user_id
-			ORDER BY %s
-			LIMIT ?`, uniqueIPsExpr, wlSQL, orderBy))
-
-		qArgs := []interface{}{startTime, now}
-		qArgs = append(qArgs, wlArgs...)
-		qArgs = append(qArgs, limit)
-		rows, err := s.logDB.Query(query, qArgs...)
-		if err != nil {
-			windowsData[window] = []map[string]interface{}{}
-			continue
-		}
-
-		// Enrich with display_name / status from the main users table.
-		s.enrichUserInfo(rows)
-
-		windowsData[window] = rows
-	}
-
-	result := map[string]interface{}{
-		"windows":      windowsData,
-		"generated_at": time.Now().Unix(),
-	}
-
-	cm.Set(cacheKey, result, 3*time.Minute)
-	return result, nil
 }
 
 // GetUserAnalysis returns detailed risk analysis for a user
@@ -504,149 +368,6 @@ func (s *RiskMonitoringService) GetUserAnalysis(userID int64, windowSeconds int6
 	}
 
 	return result, nil
-}
-
-// GetTokenRotationUsers detects token rotation behavior
-func (s *RiskMonitoringService) GetTokenRotationUsers(window string, minTokens, maxReqPerToken, limit int) (map[string]interface{}, error) {
-	seconds, ok := WindowSeconds[window]
-	if !ok {
-		seconds = 86400
-	}
-	startTime := time.Now().Unix() - seconds
-
-	cacheKey := fmt.Sprintf("risk:token_rotation:%s:%d:%d:%d", window, minTokens, maxReqPerToken, limit)
-	cm := cache.Get()
-	var cached map[string]interface{}
-	found, _ := cm.GetJSON(cacheKey, &cached)
-	if found {
-		return cached, nil
-	}
-
-	query := s.logDB.RebindQuery(`
-		SELECT l.user_id, COALESCE(l.username, '') as username,
-			COUNT(DISTINCT l.token_id) as token_count,
-			COUNT(*) as total_requests
-		FROM logs l
-		WHERE l.created_at >= ? AND l.type IN (2, 5)
-		GROUP BY l.user_id, l.username
-		HAVING COUNT(DISTINCT l.token_id) >= ?
-			AND (COUNT(*) * 1.0 / COUNT(DISTINCT l.token_id)) <= ?
-		ORDER BY token_count DESC
-		LIMIT ?`)
-
-	rows, err := s.logDB.Query(query, startTime, minTokens, maxReqPerToken, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, row := range rows {
-		total := toInt64(row["total_requests"])
-		tokens := toInt64(row["token_count"])
-		if tokens > 0 {
-			row["avg_requests_per_token"] = float64(total) / float64(tokens)
-		}
-	}
-
-	result := map[string]interface{}{
-		"items":  rows,
-		"total":  len(rows),
-		"window": window,
-	}
-
-	cm.Set(cacheKey, result, 5*time.Minute)
-	return result, nil
-}
-
-// GetAffiliatedAccounts detects accounts from same inviter
-func (s *RiskMonitoringService) GetAffiliatedAccounts(minInvited, limit int) (map[string]interface{}, error) {
-	cacheKey := fmt.Sprintf("risk:affiliated:%d:%d", minInvited, limit)
-	cm := cache.Get()
-	var cached map[string]interface{}
-	found, _ := cm.GetJSON(cacheKey, &cached)
-	if found {
-		return cached, nil
-	}
-
-	query := s.db.RebindQuery(`
-		SELECT inviter_id, COUNT(*) as invited_count
-		FROM users
-		WHERE inviter_id IS NOT NULL AND inviter_id > 0 AND deleted_at IS NULL
-		GROUP BY inviter_id
-		HAVING COUNT(*) >= ?
-		ORDER BY invited_count DESC
-		LIMIT ?`)
-
-	rows, err := s.db.Query(query, minInvited, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	result := map[string]interface{}{
-		"items":       rows,
-		"total":       len(rows),
-		"min_invited": minInvited,
-	}
-
-	cm.Set(cacheKey, result, 10*time.Minute)
-	return result, nil
-}
-
-// GetSameIPRegistrations detects accounts registered from same IP
-func (s *RiskMonitoringService) GetSameIPRegistrations(window string, minUsers, limit int) (map[string]interface{}, error) {
-	seconds, ok := WindowSeconds[window]
-	if !ok {
-		seconds = 604800
-	}
-	startTime := time.Now().Unix() - seconds
-
-	cacheKey := fmt.Sprintf("risk:same_ip:%s:%d:%d", window, minUsers, limit)
-	cm := cache.Get()
-	var cached map[string]interface{}
-	found, _ := cm.GetJSON(cacheKey, &cached)
-	if found {
-		return cached, nil
-	}
-
-	// Find IPs with first requests from multiple users
-	query := s.logDB.RebindQuery(`
-		SELECT first_ip, COUNT(*) as user_count
-		FROM (
-			SELECT user_id, ip as first_ip
-			FROM logs
-			WHERE type IN (2, 5) AND ip IS NOT NULL AND ip != ''
-			AND created_at >= ?
-			GROUP BY user_id, ip
-		) sub
-		GROUP BY first_ip
-		HAVING COUNT(*) >= ?
-		ORDER BY user_count DESC
-		LIMIT ?`)
-
-	rows, err := s.logDB.QueryWithTimeout(30*time.Second, query, startTime, minUsers, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	result := map[string]interface{}{
-		"items":     rows,
-		"total":     len(rows),
-		"window":    window,
-		"min_users": minUsers,
-	}
-
-	cm.Set(cacheKey, result, 10*time.Minute)
-	return result, nil
-}
-
-// ListBanRecords returns ban/unban audit records (placeholder - reads from storage)
-func (s *RiskMonitoringService) ListBanRecords(page, pageSize int, action string, userID *int64) map[string]interface{} {
-	return map[string]interface{}{
-		"items":       []interface{}{},
-		"total":       0,
-		"page":        page,
-		"page_size":   pageSize,
-		"total_pages": 0,
-	}
 }
 
 // ========== IP Switch Analysis ==========

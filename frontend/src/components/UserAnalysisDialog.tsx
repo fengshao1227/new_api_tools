@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, type ReactNode } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from './Toast'
 import {
-    Eye, Loader2, AlertTriangle, ShieldCheck, ShieldBan, ShieldX,
+    Eye, Loader2, AlertTriangle, ShieldCheck, ShieldBan,
     Activity, Globe, Clock, ExternalLink,
 } from 'lucide-react'
 import { Card, CardContent } from './ui/card'
@@ -68,7 +68,7 @@ export interface UserAnalysis {
     user: {
         id: number; username: string; display_name?: string | null; email?: string | null
         status: number; group?: string | null; remark?: string | null
-        in_whitelist?: boolean; linux_do_id?: string | null
+        linux_do_id?: string | null
     }
     summary: {
         total_requests: number; success_requests: number; failure_requests: number
@@ -97,7 +97,7 @@ export interface UserAnalysis {
 
 // ── 常量 ──────────────────────────────────────────────
 
-export const RISK_FLAG_LABELS: Record<string, string> = {
+const RISK_FLAG_LABELS: Record<string, string> = {
     'HIGH_RPM': '请求频率过高',
     'MANY_IPS': '多IP访问',
     'MANY_CITIES': '多城市访问',
@@ -109,7 +109,7 @@ export const RISK_FLAG_LABELS: Record<string, string> = {
     'IP_HOPPING': 'IP跳动异常',
 }
 
-export const BAN_REASONS = [
+const BAN_REASONS = [
     { value: '', label: '请选择封禁原因' },
     { value: '请求频率过高 (HIGH_RPM)', label: '请求频率过高 (HIGH_RPM)' },
     { value: '多 IP 访问异常 (MANY_IPS)', label: '多 IP 访问异常 (MANY_IPS)' },
@@ -126,7 +126,7 @@ export const BAN_REASONS = [
     { value: '违反使用条款', label: '违反使用条款' },
 ]
 
-export const UNBAN_REASONS = [
+const UNBAN_REASONS = [
     { value: '', label: '请选择解封原因' },
     { value: '误封解除', label: '误封解除' },
     { value: '用户申诉通过', label: '用户申诉通过' },
@@ -164,7 +164,7 @@ export interface UserAnalysisDialogProps {
     userId: number
     username: string
     /** 来源标识用于 ban context */
-    source: 'ip_lookup' | 'user_management' | 'risk_center'
+    source: 'ip_lookup' | 'user_management'
     /** 额外 context 信息，会合并到 ban/unban 请求的 context 中 */
     contextData?: Record<string, unknown>
     /** 是否显示最近轨迹表格（默认 true） */
@@ -176,8 +176,6 @@ export interface UserAnalysisDialogProps {
     /** 封禁/解封后回调 */
     onBanned?: () => void
     onUnbanned?: () => void
-    /** 白名单变更后回调 */
-    onWhitelistChanged?: () => void
     /** body 区域底部额外内容（例如 UserManagement 的邀请用户） */
     renderExtra?: (analysis: UserAnalysis) => ReactNode
     /** 查询截止时间戳（秒），用于查看某一时间点前的分析数据 */
@@ -195,7 +193,7 @@ export function UserAnalysisDialog({
     showRecentLogs = true,
     showIPSwitchAnalysis = true,
     headerExtra,
-    onBanned, onUnbanned, onWhitelistChanged,
+    onBanned, onUnbanned,
     renderExtra,
     endTime,
     initialWindow,
@@ -264,45 +262,6 @@ export function UserAnalysisDialog({
             fetchUserAnalysis()
         }
     }, [open, userId, analysisWindow, fetchUserAnalysis])
-
-    // ── 白名单操作 ──
-    const addToWhitelist = async (uid: number) => {
-        try {
-            const response = await fetch(`${apiUrl}/api/ai-ban/whitelist/add`, {
-                method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ user_id: uid }),
-            })
-            const res = await response.json()
-            if (res.success) {
-                showToast('success', '已添加到白名单')
-                setAnalysis(prev => prev && prev.user.id === uid ? { ...prev, user: { ...prev.user, in_whitelist: true } } : prev)
-                onWhitelistChanged?.()
-            } else {
-                showToast('error', res.message || '添加失败')
-            }
-        } catch (e) {
-            console.error('Failed to add to whitelist:', e)
-            showToast('error', '添加失败')
-        }
-    }
-
-    const removeFromWhitelist = async (uid: number) => {
-        try {
-            const response = await fetch(`${apiUrl}/api/ai-ban/whitelist/remove`, {
-                method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ user_id: uid }),
-            })
-            const res = await response.json()
-            if (res.success) {
-                showToast('success', '已从白名单移除')
-                setAnalysis(prev => prev && prev.user.id === uid ? { ...prev, user: { ...prev.user, in_whitelist: false } } : prev)
-                onWhitelistChanged?.()
-            } else {
-                showToast('error', res.message || '移除失败')
-            }
-        } catch (e) {
-            console.error('Failed to remove from whitelist:', e)
-            showToast('error', '移除失败')
-        }
-    }
 
     // ── Linux.do 查询 ──
     const handleLinuxDoLookup = async (lid: string) => {
@@ -845,27 +804,6 @@ export function UserAnalysisDialog({
                             </div>
                             <div className="flex gap-3">
                                 <Button variant="outline" onClick={() => onOpenChange(false)} disabled={mutating}>取消</Button>
-                                {analysis?.user.in_whitelist ? (
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => { if (!analysis) return; removeFromWhitelist(analysis.user.id) }}
-                                        disabled={mutating || analysisLoading}
-                                        className="bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
-                                    >
-                                        <ShieldX className="h-4 w-4 mr-2" />
-                                        移除白名单
-                                    </Button>
-                                ) : (
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => { if (!analysis) return; addToWhitelist(analysis.user.id) }}
-                                        disabled={mutating || analysisLoading}
-                                        className="bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200"
-                                    >
-                                        <ShieldCheck className="h-4 w-4 mr-2" />
-                                        加入白名单
-                                    </Button>
-                                )}
                                 {analysis?.user.status === 2 ? (
                                     <Button
                                         onClick={() => {

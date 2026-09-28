@@ -20,7 +20,6 @@ func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 	{
 		g.GET("/activity-stats", GetActivityStats)
 		g.GET("/stats", GetActivityStats)
-		g.GET("/banned", GetBannedUsers)
 		g.GET("/groups", GetUserGroups)
 		g.GET("", GetUsers)
 		g.DELETE("/:user_id", DeleteUser)
@@ -30,7 +29,6 @@ func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 		g.POST("/:user_id/ban", BanUser)
 		g.POST("/:user_id/unban", UnbanUser)
 		g.GET("/:user_id/invited", GetInvitedUsers)
-		g.POST("/tokens/:token_id/disable", DisableToken)
 	}
 }
 
@@ -45,21 +43,6 @@ func GetActivityStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": stats})
-}
-
-// GET /api/users/banned
-func GetBannedUsers(c *gin.Context) {
-	page := parsePage(c)
-	pageSize := parsePageSize(c, 50, 200)
-	search := c.Query("search")
-
-	svc := service.NewUserManagementService()
-	result, err := svc.GetBannedUsers(page, pageSize, search)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("QUERY_ERROR", err.Error(), ""))
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
 // GET /api/users/groups
@@ -298,26 +281,6 @@ func UnbanUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "用户已解封",
-	})
-}
-
-// POST /api/users/tokens/:token_id/disable
-func DisableToken(c *gin.Context) {
-	tokenID, err := strconv.ParseInt(c.Param("token_id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid token ID", ""))
-		return
-	}
-
-	svc := service.NewUserManagementService()
-	if err := svc.DisableToken(tokenID); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("DISABLE_ERROR", err.Error(), ""))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Token 已禁用",
 	})
 }
 

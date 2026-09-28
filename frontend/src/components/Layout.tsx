@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useLayoutEffect, useState, useRef } from 'react'
-import { LayoutDashboard, DollarSign, Users, LogOut, Activity, Globe, Monitor, Key, Menu, X, Server, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
+import { LayoutDashboard, DollarSign, Users, LogOut, Globe, Monitor, Key, Menu, X, Server, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import {
@@ -7,7 +7,7 @@ import {
 } from './ui/dialog'
 import { cn } from '../lib/utils'
 
-export type TabType = 'dashboard' | 'risk' | 'ip-analysis' | 'topups' | 'margin' | 'acquisition' | 'model-status' | 'users' | 'tokens' | 'channels' | 'task-logs'
+export type TabType = 'dashboard' | 'ip-analysis' | 'topups' | 'margin' | 'acquisition' | 'model-status' | 'users' | 'tokens' | 'channels' | 'task-logs'
 
 interface DbStatus {
   connected: boolean
@@ -27,7 +27,6 @@ const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: '仪表板', icon: LayoutDashboard },
   { id: 'topups', label: '充值记录', icon: DollarSign },
   { id: 'margin', label: '毛利分析', icon: TrendingUp },
-  { id: 'risk', label: '风控中心', icon: Activity },
   { id: 'ip-analysis', label: 'IP分析', icon: Globe },
   { id: 'acquisition', label: '来源分析', icon: GitBranch },
   { id: 'task-logs', label: '任务日志', icon: ListChecks },

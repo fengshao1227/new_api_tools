@@ -6,7 +6,6 @@ import { WarmupScreen } from './components/WarmupScreen'
 // 懒加载非首屏 tab — 显著降低初始包体积
 const TopUps = lazy(() => import('./components/TopUps').then(m => ({ default: m.TopUps })))
 const UserManagement = lazy(() => import('./components/UserManagement').then(m => ({ default: m.UserManagement })))
-const RealtimeRanking = lazy(() => import('./components/RealtimeRanking').then(m => ({ default: m.RealtimeRanking })))
 const IPAnalysis = lazy(() => import('./components/IPAnalysis').then(m => ({ default: m.IPAnalysis })))
 const ModelStatusMonitor = lazy(() => import('./components/ModelStatusMonitor').then(m => ({ default: m.ModelStatusMonitor })))
 const Tokens = lazy(() => import('./components/Tokens').then(m => ({ default: m.Tokens })))
@@ -16,9 +15,9 @@ const MarginAnalysis = lazy(() => import('./components/MarginAnalysis').then(m =
 const AcquisitionSource = lazy(() => import('./components/AcquisitionSource').then(m => ({ default: m.AcquisitionSource })))
 
 // Valid tabs
-const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'risk', 'ip-analysis', 'acquisition', 'model-status', 'users', 'tokens', 'channels', 'task-logs']
+const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'ip-analysis', 'acquisition', 'model-status', 'users', 'tokens', 'channels', 'task-logs']
 
-// Get initial tab from URL pathname (supports sub-routes like /risk/ip)
+// Get initial tab from URL pathname (the first path segment selects the tab)
 const getInitialTab = (): TabType => {
   const pathname = window.location.pathname.slice(1) // Remove leading /
   const mainPath = pathname.split('/')[0] // Get first segment for main tab
@@ -28,8 +27,7 @@ const getInitialTab = (): TabType => {
   }
   // 兼容旧的 hash 路由，自动迁移
   const hash = window.location.hash.slice(1)
-  // 处理 #risk/ip 等格式
-  const hashMain = hash.split('/')[0].replace('risk-', 'risk/')
+  const hashMain = hash.split('/')[0]
   if (validTabs.includes(hashMain as TabType)) {
     // 重定向到新路由
     const subPath = hash.includes('/') ? hash.split('/').slice(1).join('/') : ''
@@ -145,8 +143,6 @@ function App() {
         return <TopUps />
       case 'margin':
         return <MarginAnalysis />
-      case 'risk':
-        return <RealtimeRanking />
       case 'ip-analysis':
         return <IPAnalysis />
       case 'acquisition':

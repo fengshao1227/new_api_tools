@@ -421,62 +421,6 @@ func (s *UserManagementService) GetUserGroups() ([]map[string]interface{}, error
 	return result, nil
 }
 
-// GetBannedUsers returns banned users list
-func (s *UserManagementService) GetBannedUsers(page, pageSize int, search string) (map[string]interface{}, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := (page - 1) * pageSize
-	where := "u.status = 2 AND u.deleted_at IS NULL"
-	args := []interface{}{}
-
-	if search != "" {
-		if s.db.IsPG {
-			where += " AND u.username ILIKE $1"
-		} else {
-			where += " AND u.username LIKE ?"
-		}
-		args = append(args, "%"+search+"%")
-	}
-
-	// Count
-	countQuery := s.db.RebindQuery(fmt.Sprintf("SELECT COUNT(*) as count FROM users u WHERE %s", where))
-	countRow, _ := s.db.QueryOne(countQuery, args...)
-	total := int64(0)
-	if countRow != nil {
-		total = toInt64(countRow["count"])
-	}
-
-	// Query
-	query := fmt.Sprintf(
-		"SELECT u.id, u.username, u.display_name, u.email, u.status, u.role, "+
-			"u.quota, u.used_quota, u.request_count "+
-			"FROM users u WHERE %s ORDER BY u.id DESC LIMIT %d OFFSET %d",
-		where, pageSize, offset)
-	if !s.db.IsPG {
-		query = s.db.RebindQuery(query)
-	}
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
-
-	return map[string]interface{}{
-		"items":       rows,
-		"total":       total,
-		"page":        page,
-		"page_size":   pageSize,
-		"total_pages": totalPages,
-	}, nil
-}
-
 // DeleteUser soft-deletes a user
 func (s *UserManagementService) DeleteUser(userID int64, hardDelete bool) (int64, error) {
 	if hardDelete {
@@ -526,16 +470,6 @@ func (s *UserManagementService) UnbanUser(userID int64, enableTokens bool) error
 		s.db.Execute(s.db.RebindQuery("UPDATE tokens SET status = 1 WHERE user_id = ?"), userID)
 	}
 	logger.L.Security(fmt.Sprintf("用户 %d 已解封", userID))
-	return nil
-}
-
-// DisableToken disables a single token
-func (s *UserManagementService) DisableToken(tokenID int64) error {
-	_, err := s.db.Execute(s.db.RebindQuery("UPDATE tokens SET status = 2 WHERE id = ?"), tokenID)
-	if err != nil {
-		return err
-	}
-	logger.L.Security(fmt.Sprintf("Token %d 已禁用", tokenID))
 	return nil
 }
 

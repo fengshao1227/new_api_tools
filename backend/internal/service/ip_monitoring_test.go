@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -174,41 +173,5 @@ func TestIPDistributionNoCacheBypassesStoredResult(t *testing.T) {
 	}
 	if got := toInt64(fresh["total_requests"]); got != 2 {
 		t.Fatalf("no_cache total_requests should refresh to 2, got %d", got)
-	}
-}
-
-func TestMultiIPTokenDetailsAreLimitedInSQL(t *testing.T) {
-	installIPMonitoringSchema(t)
-	clearIPTestCaches(t)
-
-	db := NewIPMonitoringService().db.DB
-	now := time.Now().Unix()
-	if _, err := db.Exec(`INSERT INTO users (id, username) VALUES (1, 'alice')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO tokens (id, name) VALUES (10, 'alpha')`); err != nil {
-		t.Fatal(err)
-	}
-	for i := 1; i <= 25; i++ {
-		ip := fmt.Sprintf("10.0.0.%d", i)
-		if _, err := db.Exec(
-			`INSERT INTO logs (user_id, created_at, type, ip, token_id, token_name, username) VALUES (1, ?, 2, ?, 10, 'alpha', 'alice')`,
-			now, ip,
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	res, err := NewIPMonitoringService().GetMultiIPTokens("24h", 2, 10, true)
-	if err != nil {
-		t.Fatalf("multi-ip tokens: %v", err)
-	}
-	items := res["items"].([]map[string]interface{})
-	if len(items) != 1 {
-		t.Fatalf("expected one token row, got %d", len(items))
-	}
-	ips := items[0]["ips"].([]map[string]interface{})
-	if len(ips) != tokenIPDetailLimit {
-		t.Fatalf("expected %d detailed IPs, got %d", tokenIPDetailLimit, len(ips))
 	}
 }
