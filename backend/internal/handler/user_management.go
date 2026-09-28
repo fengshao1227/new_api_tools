@@ -1,19 +1,23 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/new-api-tools/backend/internal/logger"
 	"github.com/new-api-tools/backend/internal/models"
 	"github.com/new-api-tools/backend/internal/service"
 )
 
-const (
-	confirmTextSoftDelete = "注销用户"
-	confirmTextHardDelete = "彻底删除"
-)
+// maxBanReasonRunes matches new-api's ban_reason column (255 characters).
+const maxBanReasonRunes = 255
+
+// manageGatewayUser is the gateway call behind ban/unban; tests replace it.
+var manageGatewayUser = service.ManageGatewayUser
 
 func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 	g := r.Group("/users")
@@ -22,10 +26,6 @@ func RegisterUserManagementRoutes(r *gin.RouterGroup) {
 		g.GET("/stats", GetActivityStats)
 		g.GET("/groups", GetUserGroups)
 		g.GET("", GetUsers)
-		g.DELETE("/:user_id", DeleteUser)
-		g.POST("/batch-delete", BatchDeleteInactiveUsers)
-		g.GET("/soft-deleted/count", GetSoftDeletedCount)
-		g.POST("/soft-deleted/purge", PurgeSoftDeletedUsers)
 		g.POST("/:user_id/ban", BanUser)
 		g.POST("/:user_id/unban", UnbanUser)
 		g.GET("/:user_id/invited", GetInvitedUsers)
@@ -87,171 +87,61 @@ func GetUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
-// DELETE /api/users/:user_id
-func DeleteUser(c *gin.Context) {
-	userID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid user ID", ""))
-		return
-	}
-
-	hardDelete := c.DefaultQuery("hard_delete", "false") == "true"
-	var req struct {
-		ConfirmText string `json:"confirm_text"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	expectedConfirmText := confirmTextSoftDelete
-	if hardDelete {
-		expectedConfirmText = confirmTextHardDelete
-	}
-	if !requireDeleteConfirmText(c, req.ConfirmText, expectedConfirmText) {
-		return
-	}
-
-	svc := service.NewUserManagementService()
-	affected, err := svc.DeleteUser(userID, hardDelete)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("DELETE_ERROR", err.Error(), ""))
-		return
-	}
-	if affected == 0 {
-		c.JSON(http.StatusNotFound, models.ErrorResp("NOT_FOUND", "User not found", ""))
-		return
-	}
-
-	action := "注销"
-	if hardDelete {
-		action = "彻底删除"
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "用户已" + action,
-		"data":    gin.H{"affected": affected},
+// userManageError answers with the message both at the top level, where the
+// frontend's toast reads it, and in the standard error object.
+func userManageError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{
+		"success": false,
+		"message": message,
+		"error":   models.ErrorDetail{Code: code, Message: message},
 	})
 }
 
-// POST /api/users/batch-delete
-func BatchDeleteInactiveUsers(c *gin.Context) {
-	var req struct {
-		ActivityLevel string `json:"activity_level"`
-		DryRun        bool   `json:"dry_run"`
-		HardDelete    bool   `json:"hard_delete"`
-		ConfirmText   string `json:"confirm_text"`
-	}
-	req.ActivityLevel = "very_inactive"
-	req.DryRun = true
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid request body", err.Error()))
+// respondGatewayFailure passes new-api's own refusal text through unchanged;
+// anything else means the gateway could not be reached or understood.
+func respondGatewayFailure(c *gin.Context, code string, err error) {
+	var gatewayErr *service.GatewayError
+	if errors.As(err, &gatewayErr) {
+		userManageError(c, http.StatusBadRequest, code, gatewayErr.Message)
 		return
 	}
-
-	if !req.DryRun {
-		expectedConfirmText := confirmTextSoftDelete
-		if req.HardDelete {
-			expectedConfirmText = confirmTextHardDelete
-		}
-		if !requireDeleteConfirmText(c, req.ConfirmText, expectedConfirmText) {
-			return
-		}
-	}
-
-	svc := service.NewUserManagementService()
-	result, err := svc.BatchDeleteInactiveUsers(req.ActivityLevel, req.DryRun, req.HardDelete)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("DELETE_ERROR", err.Error(), ""))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
-}
-
-// GET /api/users/soft-deleted/count
-func GetSoftDeletedCount(c *gin.Context) {
-	svc := service.NewUserManagementService()
-	count, err := svc.GetSoftDeletedCount()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("QUERY_ERROR", err.Error(), ""))
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"count": count}})
-}
-
-// POST /api/users/soft-deleted/purge
-func PurgeSoftDeletedUsers(c *gin.Context) {
-	var req struct {
-		DryRun      bool   `json:"dry_run"`
-		ConfirmText string `json:"confirm_text"`
-	}
-	req.DryRun = true
-	c.ShouldBindJSON(&req)
-
-	if !req.DryRun && !requireDeleteConfirmText(c, req.ConfirmText, confirmTextHardDelete) {
-		return
-	}
-
-	svc := service.NewUserManagementService()
-	if req.DryRun {
-		result, err := svc.PreviewSoftDeletedUsers()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.ErrorResp("DELETE_ERROR", err.Error(), ""))
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "预览完成",
-			"data":    result,
-		})
-		return
-	}
-
-	affected, err := svc.PurgeSoftDeleted(req.DryRun)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("DELETE_ERROR", err.Error(), ""))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "清理完成",
-		"data":    gin.H{"affected": affected},
-	})
-}
-
-func requireDeleteConfirmText(c *gin.Context, got, expected string) bool {
-	if strings.TrimSpace(got) == expected {
-		return true
-	}
-	c.JSON(http.StatusBadRequest, models.ErrorResp(
-		"CONFIRM_TEXT_REQUIRED",
-		"请输入 "+expected+" 以确认该高风险操作",
-		"",
-	))
-	return false
+	userManageError(c, http.StatusBadGateway, code, err.Error())
 }
 
 // POST /api/users/:user_id/ban
+//
+// Bans through new-api's POST /api/user/manage so the gateway stores the reason
+// the user sees, revokes the user's sessions and clears its caches. A banned
+// user's requests are all refused by the gateway, so tokens are left alone.
 func BanUser(c *gin.Context) {
 	userID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid user ID", ""))
+	if err != nil || userID <= 0 {
+		userManageError(c, http.StatusBadRequest, "INVALID_PARAMS", "Invalid user ID")
 		return
 	}
 
 	var req struct {
-		Reason        string `json:"reason"`
-		DisableTokens bool   `json:"disable_tokens"`
+		Reason string `json:"reason"`
 	}
-	req.DisableTokens = true
-	c.ShouldBindJSON(&req)
-
-	svc := service.NewUserManagementService()
-	if err := svc.BanUser(userID, req.DisableTokens); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("BAN_ERROR", err.Error(), ""))
+	if err := c.ShouldBindJSON(&req); err != nil {
+		userManageError(c, http.StatusBadRequest, "INVALID_PARAMS", "Invalid request body")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		userManageError(c, http.StatusBadRequest, "BAN_REASON_REQUIRED", "封禁理由必填，理由会展示给被封用户")
+		return
+	}
+	if utf8.RuneCountInString(reason) > maxBanReasonRunes {
+		userManageError(c, http.StatusBadRequest, "BAN_REASON_TOO_LONG", "封禁理由不能超过 255 个字符")
 		return
 	}
 
+	if err := manageGatewayUser(c.Request.Context(), userID, service.GatewayUserDisable, reason); err != nil {
+		respondGatewayFailure(c, "BAN_ERROR", err)
+		return
+	}
+	logger.L.Security("经网关封禁用户 " + strconv.FormatInt(userID, 10))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "用户已封禁",
@@ -259,25 +149,21 @@ func BanUser(c *gin.Context) {
 }
 
 // POST /api/users/:user_id/unban
+//
+// Unbans through the gateway, which also clears the stored ban reason. Tokens
+// are not re-enabled: that would revive expired or exhausted ones too.
 func UnbanUser(c *gin.Context) {
 	userID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResp("INVALID_PARAMS", "Invalid user ID", ""))
+	if err != nil || userID <= 0 {
+		userManageError(c, http.StatusBadRequest, "INVALID_PARAMS", "Invalid user ID")
 		return
 	}
 
-	var req struct {
-		Reason       string `json:"reason"`
-		EnableTokens bool   `json:"enable_tokens"`
-	}
-	c.ShouldBindJSON(&req)
-
-	svc := service.NewUserManagementService()
-	if err := svc.UnbanUser(userID, req.EnableTokens); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResp("UNBAN_ERROR", err.Error(), ""))
+	if err := manageGatewayUser(c.Request.Context(), userID, service.GatewayUserEnable, ""); err != nil {
+		respondGatewayFailure(c, "UNBAN_ERROR", err)
 		return
 	}
-
+	logger.L.Security("经网关解封用户 " + strconv.FormatInt(userID, 10))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "用户已解封",

@@ -759,7 +759,6 @@ export function Tokens() {
           onOpenChange={setAnalysisDialogOpen}
           userId={selectedUser.id}
           username={selectedUser.username}
-          source="user_management"
         />
       )}
     </div>

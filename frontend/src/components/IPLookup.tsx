@@ -407,8 +407,6 @@ export function IPLookup() {
           onOpenChange={setAnalysisDialogOpen}
           userId={selectedUser.id}
           username={selectedUser.username}
-          source="ip_lookup"
-          contextData={{ ip: ip.trim() }}
         />
       )}
     </>

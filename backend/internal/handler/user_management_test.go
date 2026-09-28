@@ -1,74 +1,151 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/new-api-tools/backend/internal/service"
 )
 
-func TestDeleteUserRequiresConfirmTextBeforeService(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Params = gin.Params{{Key: "user_id", Value: "1"}}
-	c.Request = httptest.NewRequest(
-		http.MethodDelete,
-		"/api/users/1?hard_delete=true",
-		strings.NewReader(`{"confirm_text":"错误"}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+type gatewayCall struct {
+	called bool
+	userID int64
+	action string
+	reason string
+}
 
-	DeleteUser(c)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+func stubGatewayUser(t *testing.T, result error) *gatewayCall {
+	t.Helper()
+	call := &gatewayCall{}
+	original := manageGatewayUser
+	manageGatewayUser = func(_ context.Context, userID int64, action, reason string) error {
+		call.called = true
+		call.userID, call.action, call.reason = userID, action, reason
+		return result
 	}
-	if !strings.Contains(w.Body.String(), "CONFIRM_TEXT_REQUIRED") {
-		t.Fatalf("expected confirmation error, got %s", w.Body.String())
+	t.Cleanup(func() { manageGatewayUser = original })
+	return call
+}
+
+func serveUserAction(t *testing.T, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterUserManagementRoutes(r.Group("/api"))
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func responseMessage(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
+	}
+	return body.Message
+}
+
+func TestBanUserRequiresReasonBeforeCallingGateway(t *testing.T) {
+	call := stubGatewayUser(t, nil)
+
+	rec := serveUserAction(t, "/api/users/5/ban", `{"reason":"   "}`)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "BAN_REASON_REQUIRED") {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if call.called {
+		t.Fatal("gateway must not be called without a reason")
 	}
 }
 
-func TestBatchDeleteRequiresConfirmTextBeforeService(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/api/users/batch-delete",
-		strings.NewReader(`{"activity_level":"never","dry_run":false,"hard_delete":false}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+func TestBanUserRejectsOverlongReason(t *testing.T) {
+	call := stubGatewayUser(t, nil)
 
-	BatchDeleteInactiveUsers(c)
+	rec := serveUserAction(t, "/api/users/5/ban", `{"reason":"`+strings.Repeat("盗", maxBanReasonRunes+1)+`"}`)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "BAN_REASON_TOO_LONG") {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "CONFIRM_TEXT_REQUIRED") {
-		t.Fatalf("expected confirmation error, got %s", w.Body.String())
+	if call.called {
+		t.Fatal("gateway must not be called with an overlong reason")
 	}
 }
 
-func TestPurgeSoftDeletedRequiresConfirmTextBeforeService(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(
-		http.MethodPost,
-		"/api/users/soft-deleted/purge",
-		strings.NewReader(`{"dry_run":false}`),
-	)
-	c.Request.Header.Set("Content-Type", "application/json")
+func TestBanUserSendsDisableWithTrimmedReason(t *testing.T) {
+	call := stubGatewayUser(t, nil)
 
-	PurgeSoftDeletedUsers(c)
+	rec := serveUserAction(t, "/api/users/5/ban", `{"reason":"  Chargeback on a stolen card  ","disable_tokens":true}`)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "CONFIRM_TEXT_REQUIRED") {
-		t.Fatalf("expected confirmation error, got %s", w.Body.String())
+	if call.userID != 5 || call.action != service.GatewayUserDisable || call.reason != "Chargeback on a stolen card" {
+		t.Fatalf("unexpected gateway call: %#v", call)
+	}
+}
+
+func TestBanUserPassesGatewayRefusalThrough(t *testing.T) {
+	stubGatewayUser(t, &service.GatewayError{Message: "无法禁用超级管理员用户"})
+
+	rec := serveUserAction(t, "/api/users/1/ban", `{"reason":"test"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if msg := responseMessage(t, rec); msg != "无法禁用超级管理员用户" {
+		t.Fatalf("message = %q", msg)
+	}
+}
+
+func TestBanUserReportsUnreachableGatewayAsBadGateway(t *testing.T) {
+	stubGatewayUser(t, errors.New("请求网关用户管理接口失败: connection refused"))
+
+	rec := serveUserAction(t, "/api/users/5/ban", `{"reason":"test"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUnbanUserSendsEnable(t *testing.T) {
+	call := stubGatewayUser(t, nil)
+
+	rec := serveUserAction(t, "/api/users/9/unban", `{"enable_tokens":true}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if call.userID != 9 || call.action != service.GatewayUserEnable || call.reason != "" {
+		t.Fatalf("unexpected gateway call: %#v", call)
+	}
+}
+
+func TestRemovedUserDeletionRoutesAreGone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterUserManagementRoutes(r.Group("/api"))
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodDelete, "/api/users/5"},
+		{http.MethodPost, "/api/users/batch-delete"},
+		{http.MethodGet, "/api/users/soft-deleted/count"},
+		{http.MethodPost, "/api/users/soft-deleted/purge"},
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(route.method, route.path, nil))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s should no longer be routed, got %d", route.method, route.path, rec.Code)
+		}
 	}
 }

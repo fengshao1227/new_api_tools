@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/new-api-tools/backend/internal/cache"
-	"github.com/new-api-tools/backend/internal/config"
 	"github.com/new-api-tools/backend/internal/database"
 	"github.com/new-api-tools/backend/internal/util"
 )
@@ -134,26 +133,20 @@ type priceBookTier struct {
 }
 
 type pricingHTTPClient struct {
-	baseURL string
-	apiKey  string
+	gateway newAPIAdminTarget
 	client  *http.Client
 }
 
 func newPricingHTTPClient() (*pricingHTTPClient, error) {
-	cfg := config.Get()
-	key := strings.TrimSpace(cfg.NewAPIKey)
-	if key == "" {
-		return nil, fmt.Errorf("NEWAPI_API_KEY 未配置，无法读取 new-api 的定价解析结果")
+	gateway, err := loadNewAPIAdminTarget()
+	if err != nil {
+		return nil, fmt.Errorf("%w，无法读取 new-api 的定价解析结果", err)
 	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.NewAPIBaseURL), "/")
-	if base == "" {
-		return nil, fmt.Errorf("NEWAPI_BASEURL 未配置")
-	}
-	return &pricingHTTPClient{baseURL: base, apiKey: key, client: &http.Client{Timeout: pricingAnalysisTimeout}}, nil
+	return &pricingHTTPClient{gateway: gateway, client: &http.Client{Timeout: pricingAnalysisTimeout}}, nil
 }
 
 func (c *pricingHTTPClient) getJSON(ctx context.Context, path string, query url.Values, target interface{}) error {
-	endpoint := c.baseURL + path
+	endpoint := c.gateway.baseURL + path
 	if encoded := query.Encode(); encoded != "" {
 		endpoint += "?" + encoded
 	}
@@ -161,8 +154,7 @@ func (c *pricingHTTPClient) getJSON(ctx context.Context, path string, query url.
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("New-Api-User", "1")
+	c.gateway.setAdminHeaders(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("请求 new-api 定价接口失败: %w", err)

@@ -109,31 +109,8 @@ const RISK_FLAG_LABELS: Record<string, string> = {
     'IP_HOPPING': 'IP跳动异常',
 }
 
-const BAN_REASONS = [
-    { value: '', label: '请选择封禁原因' },
-    { value: '请求频率过高 (HIGH_RPM)', label: '请求频率过高 (HIGH_RPM)' },
-    { value: '多 IP 访问异常 (MANY_IPS)', label: '多 IP 访问异常 (MANY_IPS)' },
-    { value: '多城市访问 (MANY_CITIES)', label: '多城市访问 (MANY_CITIES)' },
-    { value: '跨城跳跃 (GEO_JUMP)', label: '跨城跳跃 (GEO_JUMP)' },
-    { value: '跨境访问 (CROSS_BORDER)', label: '跨境访问 (CROSS_BORDER)' },
-    { value: '失败率过高 (HIGH_FAILURE_RATE)', label: '失败率过高 (HIGH_FAILURE_RATE)' },
-    { value: '空回复率过高 (HIGH_EMPTY_RATE)', label: '空回复率过高 (HIGH_EMPTY_RATE)' },
-    { value: 'IP快速切换 (IP_RAPID_SWITCH)', label: 'IP快速切换 (IP_RAPID_SWITCH)' },
-    { value: 'IP跳动异常 (IP_HOPPING)', label: 'IP跳动异常 (IP_HOPPING)' },
-    { value: '账号共享嫌疑', label: '账号共享嫌疑' },
-    { value: '令牌泄露风险', label: '令牌泄露风险' },
-    { value: '滥用 API 资源', label: '滥用 API 资源' },
-    { value: '违反使用条款', label: '违反使用条款' },
-]
-
-const UNBAN_REASONS = [
-    { value: '', label: '请选择解封原因' },
-    { value: '误封解除', label: '误封解除' },
-    { value: '用户申诉通过', label: '用户申诉通过' },
-    { value: '风险已排除', label: '风险已排除' },
-    { value: '账号核实完成', label: '账号核实完成' },
-    { value: '临时解封观察', label: '临时解封观察' },
-]
+// 与网关 users.ban_reason 列宽一致
+const MAX_BAN_REASON_LENGTH = 255
 
 const WINDOW_LABELS: Record<string, string> = {
     '1h': '1小时', '3h': '3小时', '6h': '6小时', '12h': '12小时',
@@ -163,10 +140,6 @@ export interface UserAnalysisDialogProps {
     /** 用户基本信息 */
     userId: number
     username: string
-    /** 来源标识用于 ban context */
-    source: 'ip_lookup' | 'user_management'
-    /** 额外 context 信息，会合并到 ban/unban 请求的 context 中 */
-    contextData?: Record<string, unknown>
     /** 是否显示最近轨迹表格（默认 true） */
     showRecentLogs?: boolean
     /** 是否显示 IP 切换分析（默认 true） */
@@ -189,7 +162,6 @@ export interface UserAnalysisDialogProps {
 export function UserAnalysisDialog({
     open, onOpenChange,
     userId, username,
-    source, contextData,
     showRecentLogs = true,
     showIPSwitchAnalysis = true,
     headerExtra,
@@ -221,9 +193,8 @@ export function UserAnalysisDialog({
         username: string
         displayName?: string
         reason: string
-        disableTokens: boolean
-        enableTokens: boolean
-    }>({ open: false, type: 'ban', userId: 0, username: '', reason: '', disableTokens: true, enableTokens: false })
+    }>({ open: false, type: 'ban', userId: 0, username: '', reason: '' })
+    const banReason = banConfirmDialog.reason.trim()
 
     // ── 获取分析数据 ──
     const fetchUserAnalysis = useCallback(async () => {
@@ -286,22 +257,17 @@ export function UserAnalysisDialog({
         finally { setLinuxDoLookupLoading(null) }
     }
 
-    // ── 封禁/解封 API ──
+    // ── 封禁/解封 API（后端转调网关 /api/user/manage） ──
     const handleBanConfirm = async () => {
-        setMutating(true)
         const isBan = banConfirmDialog.type === 'ban'
+        if (isBan && !banReason) return
+        setMutating(true)
         const endpoint = isBan ? 'ban' : 'unban'
         try {
             const response = await fetch(`${apiUrl}/api/users/${banConfirmDialog.userId}/${endpoint}`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
-                body: JSON.stringify({
-                    reason: banConfirmDialog.reason || null,
-                    ...(isBan
-                        ? { disable_tokens: banConfirmDialog.disableTokens }
-                        : { enable_tokens: banConfirmDialog.enableTokens }),
-                    context: { source, ...contextData },
-                }),
+                body: JSON.stringify(isBan ? { reason: banReason } : {}),
             })
             const res = await response.json()
             if (res.success) {
@@ -811,7 +777,7 @@ export function UserAnalysisDialog({
                                             setBanConfirmDialog({
                                                 open: true, type: 'unban', userId: analysis.user.id,
                                                 username: analysis.user.username, displayName: analysis.user.display_name || undefined,
-                                                reason: '', disableTokens: false, enableTokens: true,
+                                                reason: '',
                                             })
                                         }}
                                         disabled={mutating || analysisLoading}
@@ -828,7 +794,7 @@ export function UserAnalysisDialog({
                                             setBanConfirmDialog({
                                                 open: true, type: 'ban', userId: analysis.user.id,
                                                 username: analysis.user.username, displayName: analysis.user.display_name || undefined,
-                                                reason: '', disableTokens: true, enableTokens: false,
+                                                reason: '',
                                             })
                                         }}
                                         disabled={mutating || analysisLoading}
@@ -862,35 +828,28 @@ export function UserAnalysisDialog({
                         </DialogDescription>
                     </DialogHeader>
 
-                    <div className="flex flex-col gap-4">
+                    {banConfirmDialog.type === 'ban' ? (
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none">
-                                {banConfirmDialog.type === 'ban' ? '请选择封禁原因' : '请选择解封原因'}
+                            <label htmlFor="ban-reason" className="text-sm font-medium leading-none">
+                                封禁理由（必填）
                             </label>
-                            <Select
+                            <textarea
+                                id="ban-reason"
                                 value={banConfirmDialog.reason}
                                 onChange={(e) => setBanConfirmDialog(prev => ({ ...prev, reason: e.target.value }))}
-                                className="w-full"
-                            >
-                                {(banConfirmDialog.type === 'ban' ? BAN_REASONS : UNBAN_REASONS).map((option) => (
-                                    <option key={option.value} value={option.value}>{option.label}</option>
-                                ))}
-                            </Select>
-                        </div>
-
-                        <label className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer select-none bg-muted/30 p-2 rounded-md border border-transparent hover:border-border">
-                            <input
-                                type="checkbox"
-                                checked={banConfirmDialog.type === 'ban' ? banConfirmDialog.disableTokens : banConfirmDialog.enableTokens}
-                                onChange={(e) => banConfirmDialog.type === 'ban'
-                                    ? setBanConfirmDialog(prev => ({ ...prev, disableTokens: e.target.checked }))
-                                    : setBanConfirmDialog(prev => ({ ...prev, enableTokens: e.target.checked }))
-                                }
-                                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                                maxLength={MAX_BAN_REASON_LENGTH}
+                                rows={3}
+                                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
-                            {banConfirmDialog.type === 'ban' ? '同时禁用该用户所有令牌' : '同时启用该用户所有令牌'}
-                        </label>
-                    </div>
+                            <p className="text-xs text-amber-600 dark:text-amber-400">
+                                理由会展示给被封用户，勿写内部备注
+                            </p>
+                        </div>
+                    ) : (
+                        <p className="text-sm text-muted-foreground">
+                            解封后网关会清除封禁理由；已禁用的令牌不会被自动启用。
+                        </p>
+                    )}
 
                     <DialogFooter className="gap-2 sm:gap-0 mt-2">
                         <Button
@@ -904,7 +863,7 @@ export function UserAnalysisDialog({
                         {banConfirmDialog.type === 'ban' ? (
                             <Button
                                 variant="destructive"
-                                disabled={mutating}
+                                disabled={mutating || !banReason}
                                 className="flex-1 sm:flex-none min-w-[100px]"
                                 onClick={handleBanConfirm}
                             >
