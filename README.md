@@ -16,7 +16,7 @@
 
 # NewAPI-Tool | NewAPI 增强管理中间件
 
-**NewAPI-Tool** 是面向 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的增强管理中间件。它以旁路方式连接 NewAPI 数据库和缓存服务，把仪表盘、充值审计、兑换码管理、风控分析、模型监控和运维配置集中到一个独立管理后台中。
+**NewAPI-Tool** 是面向 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的增强管理中间件。它以旁路方式连接 NewAPI 数据库和缓存服务，把仪表盘、充值审计、毛利与来源分析、用户分析、模型监控和运维配置集中到一个独立管理后台中。
 
 它的核心原则是**零侵入运行**：不修改 NewAPI 源码，不改变 NewAPI 原有表结构，不接管 NewAPI 主服务流量；只在管理员需要审计、分析、批量处理或扩展运营能力时提供额外工作台。
 
@@ -28,7 +28,7 @@
 | 上游项目 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) |
 | 运行方式 | 独立容器 / 独立进程，连接 NewAPI 现有数据库 |
 | 默认端口 | `1145` |
-| 后端栈 | Go `1.25.6`、Gin `1.11`、sqlx、Redis、SQLite 辅助缓存 |
+| 后端栈 | Go `1.25.6`、Gin `1.11`、sqlx、Redis |
 | 前端栈 | React `19`、Vite `8`、TypeScript、Tailwind CSS、ECharts |
 | 数据库 | 生产优先 PostgreSQL / MySQL，查询字段以导出的真实 schema 为准 |
 | 部署入口 | `install.sh` 一键部署，或 `docker-compose.yml` 手动部署 |
@@ -42,12 +42,9 @@
 | 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细拆分注册用户，并对照成功充值标记已付费、未付费和付费率。 |
 | 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
-| 兑换码管理 | 批量生成兑换码，支持固定/随机额度、前缀、过期时间、高级筛选、复制和批量删除。 |
-| 风控中心 | 查看高频请求、额度消耗、关联账号、同 IP 注册、Token 轮换、封禁记录和用户风险画像。 |
-| 联合违规广播 | 接入独立 `newapi-tool-AbuseHub`，同步外部通报，本地匹配 email / OAuth / LinuxDo / IP 等身份线索，由管理员人工复核。 |
-| IP 与日志分析 | 对大表 `logs` 做缓存化统计，提供 IP 分布、共享 IP、用户请求排行、模型使用和同步状态。 |
-| 模型监控 | 配置模型状态看板、时间窗口、展示主题、刷新间隔、分组和可公开嵌入的模型状态页。 |
-| 用户与令牌运维 | 用户列表、封禁/解封、软删除清理、令牌统计、分组预览和自动分组任务。 |
+| IP 分析 | IP 分布、单个 IP 反查，以及用户 / 令牌的只读风险画像。风控本身在网关 new-api 中执行。 |
+| 模型监控 | 需登录的模型状态看板，支持时间窗口、刷新间隔、排序和分组。 |
+| 用户与令牌运维 | 用户列表与分组筛选、经网关管理接口封禁/解封（封禁理由对用户可见）、令牌统计。 |
 
 ## 架构边界
 
@@ -87,7 +84,7 @@ docker-compose up -d
 
 ### 日志分库（LOG_SQL_DSN）自动兼容
 
-部分 NewAPI fork 支持 `LOG_SQL_DSN`，把 `logs` 表整张分离到**独立日志数据库**（MySQL、PostgreSQL 或 ClickHouse）。这种部署下主库的 `logs` 表会被冻结、不再更新——本工具若只连主库，则**仪表盘流量分析、使用日志、模型监控、风控 / IP 分析全部显示为 0**（其余如用户、令牌、兑换码数据正常）。
+部分 NewAPI fork 支持 `LOG_SQL_DSN`，把 `logs` 表整张分离到**独立日志数据库**（MySQL、PostgreSQL 或 ClickHouse）。这种部署下主库的 `logs` 表会被冻结、不再更新——本工具若只连主库，则**仪表盘流量分析、使用日志、模型监控、IP 分析全部显示为 0**（其余如用户、令牌数据正常）。
 
 **无需任何额外操作**：上面的一键脚本 / `deploy.sh` 会自动检测 NewAPI 是否启用了 `LOG_SQL_DSN`，若启用则自动解析、做容器名 / 网络改写、写入工具 `.env` 并把工具容器接入日志库网络。NewAPI 未启用时则跳过（日志查询回落主库，行为不变）。
 
@@ -126,8 +123,8 @@ bash <(curl -sSL https://raw.githubusercontent.com/james-6-23/new_api_tools/main
 | `DB_MAX_OPEN_CONNS` | 数据库最大打开连接数 | `50` |
 | `DB_MAX_IDLE_CONNS` | 数据库最大空闲连接数 | `15` |
 | `NEWAPI_NETWORK` | NewAPI 所在 Docker 网络 | `new-api_default` |
-| `NEWAPI_BASEURL` | NewAPI 内部地址，用于需要回调上游的功能 | 可选 |
-| `NEWAPI_API_KEY` | new-api 管理员访问令牌，毛利页用它读取权威成本基准和价格簿 | 毛利解析必填 |
+| `NEWAPI_BASEURL` | NewAPI 内部地址，毛利解析和封禁/解封经它调用网关管理接口 | 毛利解析、封禁必填 |
+| `NEWAPI_API_KEY` | new-api 管理员访问令牌：毛利页读取权威成本基准和价格簿，封禁/解封调用 `POST /api/user/manage` | 毛利解析、封禁必填 |
 | `REDIS_HOST` | Redis 容器主机名；接入网关网络时避免使用会撞名的 `redis` | `beat-newapi-tools-redis` |
 | `REDIS_PORT` | Redis 端口 | `6379` |
 | `REDIS_PASSWORD` | 内置 Redis 密码 | 留空或自定义 |
@@ -135,18 +132,6 @@ bash <(curl -sSL https://raw.githubusercontent.com/james-6-23/new_api_tools/main
 | `LOG_LEVEL` | 日志级别 | `info` |
 | `DOWNLOAD_GEOIP` | 部署脚本是否下载 GeoIP（IP 定位用，约 70MB；可选，默认交互询问且默认跳过） | `0` 跳过 / `1` 下载 |
 | `SKIP_GEOIP_DOWNLOAD` | 设为 `1` 时强制跳过 GeoIP 下载 | 可选 |
-
-## 联合违规广播接入
-
-联合违规广播 Hub 独立部署在 `newapi-tool-AbuseHub/` 目录，默认使用 SQLite 和 `8888` 端口。Hub 管理员在 `/admin/` 创建命名密钥后，会得到一次性 `Secret`；密钥名称就是 NewAPI-Tool 侧的节点名称。
-
-NewAPI-Tool 接入流程：
-
-1. 进入前端「联合违规广播 → 接入状态」页，填写 Hub URL（推荐使用 `/v1/live` 后缀）、节点名称、密钥、拉取间隔，并勾选「启用拉取」后保存。
-2. 配置变更立即生效，不需要重启后端进程。
-3. 点击「连接 Hub」，Hub 收到心跳后会把该密钥激活为已连接节点。
-
-之后 NewAPI-Tool 会定时拉取 `GET /v1/reports`，并把收到的通报写入本地 SQLite 缓存（`DATA_DIR/abuse-broadcast.db`），不修改 NewAPI 原有表结构。
 
 ## 本地开发
 
@@ -177,12 +162,10 @@ npm run dev
 | 仪表盘 | `GET /api/dashboard/*` |
 | 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景 |
 | 充值 | `GET /api/top-ups`、`GET /api/top-ups/analytics/*` |
-| 兑换码 | `GET /api/redemptions`、`POST /api/redemptions/generate` |
-| 风控 | `GET /api/risk/*`、`GET /api/ip/*`、`POST /api/ai-ban/*` |
-| 联合广播 | `GET /api/abuse-broadcast/*`、`POST /api/abuse-broadcast/*` |
-| 模型状态 | `GET /api/model-status/*`、`GET /api/embed/model-status/*` |
+| 用户分析 | `GET /api/risk/users/:id/analysis`、`GET /api/ip/lookup/:ip`、`GET /api/ip/geo/*` |
+| 模型状态 | `/api/model-status/*`（需登录；`status/batch`、`status/multiple` 单次最多 100 个模型） |
 | 来源分析 | `GET /api/acquisition/overview?days=30`（`days=0` 为全部时间） |
-| 用户与令牌 | `GET /api/users`、`GET /api/tokens`、`GET /api/auto-group/*` |
+| 用户与令牌 | `GET /api/users`、`GET /api/users/groups`、`POST /api/users/:id/ban`、`POST /api/users/:id/unban`（转调网关）、`GET /api/tokens` |
 | 存储与系统 | `GET /api/storage/*`、`GET /api/system/*` |
 
 ## 数据来源说明
