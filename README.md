@@ -40,9 +40,9 @@
 |---|---|
 | 经营仪表盘 | 最上面是增长（本月/累计注册、付费、收入 + 按日/按月趋势表）；下面按今天 / 7 天 / 30 天看计费额、供应商成本、实际消费收入与毛利（与毛利页同口径）、现金收入，注册转化（按来源 / 国家），赠额发放与负债、网关风控待审与扣住金额，异步任务成败与失败原因、退款，上游账户与未关闭告警，定价缺口（无成本表达式的模型、未定价调用），以及排除免费模型后的模型排行。风控页、上游监控、告警表不存在时对应卡片显示「无数据」。 |
 | 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细、注册国家（`signup_country`）和赠额档位（`grant_region`，附实发赠额）拆分注册用户，并对照成功充值标记已付费、未付费和付费率；排除面板白名单（内部账号、管理员）。 |
-| 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分；同时读取 new-api 权威价格簿，给出成本基准、最高/最低毛利场景。 |
+| 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分。付费客户 = 有成功充值单或 `topup_quota > 0`（线下结算、管理员加余额的企业客户也算）；内部成本只算管理员和面板白名单——被加过余额的测试号要进白名单。成本基准读 new-api 价格簿（牌价）与成本基准，零售价按模型主分组的 `GroupRatio` 折算（主分组 = `AutoGroups` 里第一个有该模型的组），其他倍率不同的分组逐个列出；网关读失败时显示上次结果并标明。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
-| IP 分析 | IP 分布、单个 IP 反查，以及用户 / 令牌的只读风险画像。风控本身在网关 new-api 中执行。 |
+| IP 分析 | 按国家/地区的流量分布（世界地图 + 排名，基于 Top IP 样本并标明覆盖率）、单个 IP 反查，以及用户 / 令牌的只读风险画像。风控本身在网关 new-api 中执行。 |
 | 模型监控 | 需登录的模型状态看板，支持时间窗口、刷新间隔、排序和分组。 |
 | 渠道监控 | 渠道状态、测速、窗口请求量与错误率、单点模型；余额逐渠道显示上游自报值（币种以上游为准），不做合计。 |
 | 用户与令牌运维 | 用户列表带是否付费、剩余赠额、注册国家 / 赠额档位、网关风控状态和全部登录方式（含控制台配置的 OAuth 提供方），可按分组与登录方式筛选；经网关管理接口封禁/解封（封禁理由对用户可见）。令牌按网关的有效状态统计（手动禁用、已过期、额度耗尽分开），批量禁用/启用写入数据目录下的 `token_audit.jsonl`，令牌页列出最近操作。 |
@@ -161,7 +161,8 @@ npm run dev
 | 健康检查 | `GET /api/health`、`GET /api/health/db` |
 | 认证 | `POST /api/auth/login`、`POST /api/auth/logout` |
 | 仪表盘 | `GET /api/dashboard/growth`、`GET /api/dashboard/growth/trend`；经营视图 `GET /api/dashboard/business/{finance,conversion,gifts-risk,tasks,pricing-gaps}?window=today\|7d\|30d`、`GET /api/dashboard/business/supply` |
-| 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景 |
+| 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing[?refresh=true]`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景；定价接口 45 秒内读不完网关返回 504，有上次结果时返回 200 + `stale: true` |
+| IP 分布 | `GET /api/dashboard/ip-distribution?window=1h\|6h\|24h\|7d`，按国家/地区 |
 | 充值 | `GET /api/top-ups`、`GET /api/top-ups/analytics/*` |
 | 用户分析 | `GET /api/risk/users/:id/analysis`、`GET /api/ip/lookup/:ip`、`GET /api/ip/geo/*` |
 | 模型状态 | `/api/model-status/*`（需登录；`status/batch`、`status/multiple` 单次最多 100 个模型） |
