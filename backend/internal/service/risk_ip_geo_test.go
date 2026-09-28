@@ -70,11 +70,11 @@ func TestAnalyzeIPGeoFromSequence_CrossCityJump(t *testing.T) {
 
 func TestAppendGeoAwareIPRiskFlags_CampusNotManyIPs(t *testing.T) {
 	geo := map[string]interface{}{
-		"geo_available":          true,
-		"unique_cities":          int64(1),
-		"unique_countries":       int64(1),
-		"cross_city_switches":    int64(0),
-		"rapid_cross_city_count": int64(0),
+		"geo_available":           true,
+		"unique_cities":           int64(1),
+		"unique_countries":        int64(1),
+		"cross_city_switches":     int64(0),
+		"rapid_cross_city_count":  int64(0),
 		"min_cross_city_interval": int64(0),
 	}
 	ipSwitch := map[string]interface{}{

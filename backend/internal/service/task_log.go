@@ -11,9 +11,10 @@ import (
 // TaskLogService 任务日志（tasks 表）查询与「任务 ↔ 使用日志」关联。
 // 上游提交日志缺 task_id（new-api service/task_billing.go LogTaskConsumption），
 // 只有结算/退款日志带 other."task_id"，故关联采用双引擎：
-//   exact     — logs.other 含 "task_id":"<id>"（结算/退款日志、上游修复后的全部日志）
-//   heuristic — 提交消费日志：user_id + channel_id + quota 相等 + other 含 is_task
-//               + 时间与 submit_time 相差 ≤120s（存量生图日志唯一可行的匹配）
+//
+//	exact     — logs.other 含 "task_id":"<id>"（结算/退款日志、上游修复后的全部日志）
+//	heuristic — 提交消费日志：user_id + channel_id + quota 相等 + other 含 is_task
+//	            + 时间与 submit_time 相差 ≤120s（存量生图日志唯一可行的匹配）
 type TaskLogService struct {
 	db    *database.Manager
 	logDB *database.Manager

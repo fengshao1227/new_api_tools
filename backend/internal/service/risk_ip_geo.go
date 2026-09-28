@@ -67,16 +67,16 @@ func collectDistinctIPs(ipSequence []map[string]interface{}) []string {
 // geoMap 由 LookupIPGeoBatch 提供；不可用时仍返回结构，available=false。
 func analyzeIPGeoFromSequence(ipSequence []map[string]interface{}, geoMap map[string]IPGeoInfo, geoAvailable bool) map[string]interface{} {
 	result := map[string]interface{}{
-		"geo_available":            geoAvailable,
-		"unique_cities":            int64(0),
-		"unique_regions":           int64(0),
-		"unique_countries":         int64(0),
-		"cross_city_switches":      int64(0),
-		"same_city_switches":       int64(0),
-		"rapid_cross_city_count":   int64(0),
-		"unknown_geo_ips":          int64(0),
-		"min_cross_city_interval":  int64(0),
-		"locations":                []map[string]interface{}{},
+		"geo_available":           geoAvailable,
+		"unique_cities":           int64(0),
+		"unique_regions":          int64(0),
+		"unique_countries":        int64(0),
+		"cross_city_switches":     int64(0),
+		"same_city_switches":      int64(0),
+		"rapid_cross_city_count":  int64(0),
+		"unknown_geo_ips":         int64(0),
+		"min_cross_city_interval": int64(0),
+		"locations":               []map[string]interface{}{},
 	}
 	if len(ipSequence) == 0 {
 		return result
