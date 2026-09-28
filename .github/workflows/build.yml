@@ -181,7 +181,9 @@ jobs:
           git fetch origin main
           git checkout --detach FETCH_HEAD
           cd "$DEPLOY_PATH"
-          docker build -t beat-newapi-tools:local ./src
+          # 'limited' is a buildx builder pinned to one core on the server; a plain
+          # docker build saturates the CPU and the co-located gateway answers 503.
+          docker buildx build --builder limited --load -t beat-newapi-tools:local ./src
           docker compose -p beat-newapi-tools -f docker-compose.yml up -d --force-recreate tools
           REMOTE
 
