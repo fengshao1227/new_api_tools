@@ -87,3 +87,72 @@ PostgreSQL 的详细 Token 统计先按用户、时间和模型过滤，再用�
 退款流水独立、缓存 Token 不重复累加、未采集字段、未知币种及管理员认证。
 前端检查用户切换与迟到响应、查询草稿与已应用条件、零值/未知、CSV 转义和窄屏表格。
 本地模拟数据只证明页面和查询行为，生产数据的完整性仍受网关实际记录及保留策略限制。
+
+运行已有检查：
+
+```sh
+cd backend
+go test ./... -count=1
+go vet ./...
+go build ./...
+cd ../frontend
+npm run build
+node --experimental-strip-types --test scripts/user-insights.test.mjs
+```
+
+外部数据库测试默认跳过；只有明确指定独立测试库的 `TOOL_INSIGHTS_TEST_MAIN_DRIVER`、
+`TOOL_INSIGHTS_TEST_MAIN_DSN`、`TOOL_INSIGHTS_TEST_LOG_DRIVER`、`TOOL_INSIGHTS_TEST_LOG_DSN`
+及 `TOOL_INSIGHTS_TEST_ALLOW_FIXTURE_WRITES=1` 后，才运行 `TestUserInsightsExternalDatabases`。
+测试会建表和清理自身创建的表，不能使用生产连接串。覆盖 PostgreSQL/MySQL 主库与
+PostgreSQL/MySQL/ClickHouse 日志库的六种组合，并同时保留 SQLite 的默认测试。
+
+## 发布到 BeatAPI 内部 Tool 实例
+
+本功能位于 `fengshao1227/new_api_tools`，与用户网站 `erickkkyt/BeatAPI` 的 Actions 账单、
+工作流和部署目标独立。不要把网站的额度限制推断成 Tool 也不能发布。
+本地 `gh` 默认仓库可能指向上游 `james-6-23/new_api_tools`，所有发布和状态查询均明确传入
+`--repo fengshao1227/new_api_tools`，推送只使用已核对过的 `origin`。
+
+生产入口是 `https://beattool.fengshao1227.com/user-insights`。目前 nginx 指向回环端口 `1146`，
+服务目录 `/home/ubuntu/beat-newapi-tools`，源码在其 `src/`，容器是 `beat-newapi-tools`。
+部署前仍需核实 nginx、端口和容器对应关系，不能把同机或其他机器的 `1145` Tool 实例当成目标。
+
+已获发布授权且检查通过后，推送目标提交，再检查该 SHA 的 `.github/workflows/build.yml`。
+没有对应运行时，用同一工作流的 `workflow_dispatch` 触发；不要仅凭 push 成功就报告上线。
+
+```sh
+tool_release_sha="$(git rev-parse HEAD)"
+git push origin "$tool_release_sha:main"
+gh run list --repo fengshao1227/new_api_tools --workflow build.yml --commit "$tool_release_sha"
+```
+
+确认无对应运行、且远端 `main` 仍是目标提交时：
+
+```sh
+gh workflow run build.yml --repo fengshao1227/new_api_tools --ref main
+```
+
+要求两个架构构建、镜像合并、生产部署及健康检查均成功。生产部署实际在服务器使用
+`limited` 构建器从源码构建 `beat-newapi-tools:local`，只重建该 Tool 服务；GHCR 多架构镜像
+并非当前生产容器直接使用的产物。核对实际运行镜像与部署日志中的对应 manifest，不能把
+`exporting config` 的摘要误认为 `docker inspect .Image`，也不能仅用源码目录的 HEAD 证明运行版本。
+重建前给旧镜像保留独立回滚标签，不删除既有回滚资源。
+
+上线验证至少包括：健康检查、三条画像接口匿名均返回 401、已授权只读查询真实用户、模型过滤
+同时作用于汇总和明细、消费/Token 总量与模型/日期拆分对账，以及公开页面实际引用的新资源。
+不得为验证而修改余额、发送邮件或打印认证值/完整客户响应。生产登录浏览器交互、匿名页面资源、
+真实数据 API 和本地模拟 UI 是不同证据，应分别报告。
+
+## 查询超时排查
+
+先确认用户/类型/时间筛选命中现有日志索引，再比较筛选和聚合的执行耗时。即使只有约一万条记录，
+嵌套投影被 PostgreSQL 展开后，对每个汇总字段重复做 JSON 校验和转换也可能耗尽请求预算；
+小规模 fixture 和空数据接口通过不足以证明生产规模可用。
+保持用户/时间/模型过滤在物化前，保留 `parsed` 与 `source_rows` 两层物化边界，
+不要为缩短代码重新内联。统计仍采用原三条汇总查询，不变更大小写排序规则、NULL/空模型分组、
+缓存未知/零值、退款或活跃日口径。不要以加大超时、缩小默认窗口、截断记录来掩盖性能问题。
+
+用约 10,000 条、每条约 2 KB 元数据的独立测试库调用完整 `Report()`，
+核对汇总/模型/日期一致性并记录耗时；计时排除建库和编译，避免把环境相关阈值写成易波动的测试。
+必要时在只读事务与有限 `statement_timeout` 下，对同一生产筛选执行参数化 `EXPLAIN ANALYZE`，
+只保留执行时间和聚合行数。发布后还需测完整接口，SQL 单条耗时不等于整个画像响应耗时。
