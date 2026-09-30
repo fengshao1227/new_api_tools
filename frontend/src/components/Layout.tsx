@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useLayoutEffect, useState, useRef } from 'react'
-import { LayoutDashboard, DollarSign, Users, LogOut, Globe, Monitor, Key, Menu, X, Server, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
+import { LayoutDashboard, DollarSign, Users, UserRoundSearch, LogOut, Globe, Monitor, Key, Menu, X, Server, Settings, ListChecks, TrendingUp, GitBranch } from 'lucide-react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import {
@@ -7,7 +7,7 @@ import {
 } from './ui/dialog'
 import { cn } from '../lib/utils'
 
-export type TabType = 'dashboard' | 'ip-analysis' | 'topups' | 'margin' | 'acquisition' | 'model-status' | 'users' | 'tokens' | 'channels' | 'task-logs'
+export type TabType = 'dashboard' | 'ip-analysis' | 'topups' | 'margin' | 'acquisition' | 'model-status' | 'users' | 'user-insights' | 'tokens' | 'channels' | 'task-logs'
 
 interface DbStatus {
   connected: boolean
@@ -33,6 +33,7 @@ const tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'model-status', label: '模型监控', icon: Monitor },
   { id: 'channels', label: '渠道监控', icon: Server },
   { id: 'users', label: '用户管理', icon: Users },
+  { id: 'user-insights', label: '用户画像', icon: UserRoundSearch },
   { id: 'tokens', label: '令牌管理', icon: Key },
 ]
 

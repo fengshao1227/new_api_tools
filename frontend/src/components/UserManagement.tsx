@@ -39,6 +39,7 @@ import { UserAnalysisDialog } from './UserAnalysisDialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { AffiliateStats } from './AffiliateStats'
 import { PanelWhitelist } from './PanelWhitelist'
+import { openUserInsights } from '../lib/user-insights'
 
 
 
@@ -560,7 +561,7 @@ export function UserManagement() {
                     <TableHead className="text-right hidden md:table-cell">请求数</TableHead>
                     <TableHead className="hidden md:table-cell">最后请求</TableHead>
                     <TableHead>活跃度</TableHead>
-                    <TableHead className="w-20">操作</TableHead>
+                    <TableHead className="min-w-36">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -623,13 +624,15 @@ export function UserManagement() {
                       <TableCell className="hidden md:table-cell text-xs whitespace-nowrap tabular-nums text-muted-foreground">{formatLastRequest(user)}</TableCell>
                       <TableCell>{getActivityBadge(user.activity_level)}</TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1">
+                          <Button variant="outline" size="sm" className="whitespace-nowrap" onClick={() => openUserInsights(user.id)}>查看画像</Button>
                           <Button
                             variant="ghost"
                             size="sm"
                             className="text-blue-500 hover:text-blue-600 hover:bg-blue-500/10 h-7 w-7 p-0"
                             onClick={() => openUserAnalysis(user.id, user.username)}
-                            title="用户分析"
+                            title="用户风控分析"
+                            aria-label={`查看 ${user.username} 的风控分析`}
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </Button>

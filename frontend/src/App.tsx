@@ -6,6 +6,7 @@ import { WarmupScreen } from './components/WarmupScreen'
 // 懒加载非首屏 tab — 显著降低初始包体积
 const TopUps = lazy(() => import('./components/TopUps').then(m => ({ default: m.TopUps })))
 const UserManagement = lazy(() => import('./components/UserManagement').then(m => ({ default: m.UserManagement })))
+const UserInsights = lazy(() => import('./components/UserInsights').then(m => ({ default: m.UserInsights })))
 const IPAnalysis = lazy(() => import('./components/IPAnalysis').then(m => ({ default: m.IPAnalysis })))
 const ModelStatusMonitor = lazy(() => import('./components/ModelStatusMonitor').then(m => ({ default: m.ModelStatusMonitor })))
 const Tokens = lazy(() => import('./components/Tokens').then(m => ({ default: m.Tokens })))
@@ -15,7 +16,7 @@ const MarginAnalysis = lazy(() => import('./components/MarginAnalysis').then(m =
 const AcquisitionSource = lazy(() => import('./components/AcquisitionSource').then(m => ({ default: m.AcquisitionSource })))
 
 // Valid tabs
-const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'ip-analysis', 'acquisition', 'model-status', 'users', 'tokens', 'channels', 'task-logs']
+const validTabs: TabType[] = ['dashboard', 'topups', 'margin', 'ip-analysis', 'acquisition', 'model-status', 'users', 'user-insights', 'tokens', 'channels', 'task-logs']
 
 // Get initial tab from URL pathname (the first path segment selects the tab)
 const getInitialTab = (): TabType => {
@@ -151,6 +152,8 @@ function App() {
         return <ModelStatusMonitor />
       case 'users':
         return <UserManagement />
+      case 'user-insights':
+        return <UserInsights />
       case 'tokens':
         return <Tokens />
       case 'channels':
