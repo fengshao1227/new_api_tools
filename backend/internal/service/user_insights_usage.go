@@ -26,27 +26,51 @@ func (s *UserInsightsService) insightsUsageSQL(ctx context.Context, p UserInsigh
 			}
 		}
 	}
-	columns := "id,created_at,type,model_name,quota,prompt_tokens,completion_tokens"
+	where, args := p.logWhere()
+	return s.insightsUsageSource(where, other), args, other, nil
+}
+
+// PostgreSQL otherwise flattens nested projections and repeats validation and
+// JSON parsing throughout every aggregate. Materialize JSON and extracted
+// numeric facts once, after the user/time/model filter has narrowed the rows.
+func (s *UserInsightsService) insightsUsageSource(where string, other bool) string {
+	const facts = "id,created_at,type,model_name,quota,prompt_tokens,completion_tokens"
+	columns := facts
 	if other {
 		for _, field := range []string{"cache_tokens", "cache_write_tokens", "cache_creation_tokens", "cache_creation_tokens_5m", "cache_creation_tokens_1h", "input_tokens_total"} {
-			columns += "," + insightsJSONNumber(s.logDB, "other", field) + " AS " + field
+			expression := insightsJSONNumber(s.logDB, "other", field)
+			if s.logDB.IsPG {
+				expression = insightsPGJSONNumber("other_json", field)
+			}
+			columns += "," + expression + " AS " + field
 		}
-		columns += "," + insightsJSONText(s.logDB, "other", "usage_semantic") + " AS usage_semantic"
-		columns += "," + insightsJSONText(s.logDB, "other", "claude") + " AS claude_semantic"
+		if s.logDB.IsPG {
+			columns += "," + insightsPGJSONText("other_json", "usage_semantic") + " AS usage_semantic"
+			columns += "," + insightsPGJSONText("other_json", "claude") + " AS claude_semantic"
+		} else {
+			columns += "," + insightsJSONText(s.logDB, "other", "usage_semantic") + " AS usage_semantic"
+			columns += "," + insightsJSONText(s.logDB, "other", "claude") + " AS claude_semantic"
+		}
 	} else {
 		columns += ",NULL AS cache_tokens,NULL AS cache_write_tokens,NULL AS cache_creation_tokens,NULL AS cache_creation_tokens_5m,NULL AS cache_creation_tokens_1h,NULL AS input_tokens_total,NULL AS usage_semantic,NULL AS claude_semantic"
 	}
-	where, args := p.logWhere()
-	base := "SELECT " + columns + " FROM logs WHERE " + where
+	prefix := ""
+	source := "(SELECT " + columns + " FROM logs WHERE " + where + ") source_rows"
+	if other && s.logDB.IsPG {
+		prefix = "WITH parsed AS MATERIALIZED (SELECT " + facts + "," +
+			"(CASE WHEN pg_input_is_valid(CAST(other AS TEXT), 'jsonb') THEN CAST(other AS TEXT) ELSE '{}' END)::jsonb AS other_json FROM logs WHERE " + where +
+			"), source_rows AS MATERIALIZED (SELECT " + columns + " FROM parsed) "
+		source = "source_rows"
+	}
 	split := "(COALESCE(cache_creation_tokens_5m,0)+COALESCE(cache_creation_tokens_1h,0))"
 	write := fmt.Sprintf(`CASE WHEN cache_write_tokens IS NOT NULL THEN cache_write_tokens
 		WHEN cache_creation_tokens IS NULL AND cache_creation_tokens_5m IS NULL AND cache_creation_tokens_1h IS NULL THEN NULL
 		WHEN COALESCE(cache_creation_tokens,0) > %s THEN cache_creation_tokens ELSE %s END`, split, split)
-	cache := "SELECT source_rows.*, " + write + " AS cache_write FROM (" + base + ") source_rows"
+	cache := "SELECT source_rows.*, " + write + " AS cache_write FROM " + source
 	input := `CASE WHEN input_tokens_total IS NOT NULL THEN input_tokens_total
 		WHEN usage_semantic = 'anthropic' OR claude_semantic IN ('true','1')
 		THEN prompt_tokens + COALESCE(cache_tokens,0) + COALESCE(cache_write,0) ELSE prompt_tokens END`
-	return "(SELECT cache_rows.*, " + input + " AS input_total FROM (" + cache + ") cache_rows) usage_rows", args, other, nil
+	return "(" + prefix + "SELECT cache_rows.*, " + input + " AS input_total FROM (" + cache + ") cache_rows) usage_rows"
 }
 
 const insightsMetricColumns = `

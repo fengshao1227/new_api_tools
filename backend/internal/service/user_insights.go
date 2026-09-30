@@ -150,12 +150,25 @@ func insightsJSONNumber(db *database.Manager, column, field string) string {
 	}
 	if db.IsPG {
 		base := fmt.Sprintf("(CASE WHEN pg_input_is_valid(CAST(%s AS TEXT), 'jsonb') THEN CAST(%s AS TEXT) ELSE '{}' END)::jsonb", column, column)
-		return fmt.Sprintf("CASE WHEN jsonb_typeof(%s->'%s') = 'number' AND (%s->>'%s') ~ '^[0-9]{1,15}$' THEN (%s->>'%s')::bigint END", base, field, base, field, base, field)
+		return insightsPGJSONNumber(base, field)
 	}
 	if strings.Contains(db.DB.DriverName(), "sqlite") {
 		return fmt.Sprintf("CASE WHEN json_valid(%s) THEN CASE WHEN json_type(%s, '$.%s') = 'integer' AND json_extract(%s, '$.%s') BETWEEN 0 AND 999999999999999 THEN json_extract(%s, '$.%s') END END", column, column, field, column, field, column, field)
 	}
 	return fmt.Sprintf("CASE WHEN JSON_VALID(%s) THEN CASE WHEN JSON_TYPE(JSON_EXTRACT(%s, '$.%s')) = 'INTEGER' AND JSON_UNQUOTE(JSON_EXTRACT(%s, '$.%s')) REGEXP '^[0-9]{1,15}$' THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(%s, '$.%s')) AS DECIMAL(30,0)) END END", column, column, field, column, field, column, field)
+}
+
+// The base may be a materialized, already validated jsonb column. Keeping this
+// extraction separate avoids reparsing the complete metadata for every field.
+func insightsPGJSONNumber(base, field string) string {
+	return fmt.Sprintf("CASE WHEN jsonb_typeof(%s->'%s') = 'number' AND (%s->>'%s') ~ '^[0-9]{1,15}$' THEN (%s->>'%s')::bigint END", base, field, base, field, base, field)
+}
+
+func insightsPGJSONText(base, field string) string {
+	if field == "claude" {
+		return fmt.Sprintf("CASE WHEN jsonb_typeof(%s->'claude') = 'boolean' THEN %s->>'claude' END", base, base)
+	}
+	return fmt.Sprintf("(%s->>'%s')", base, field)
 }
 
 func insightsJSONText(db *database.Manager, column, field string) string {
@@ -166,11 +179,8 @@ func insightsJSONText(db *database.Manager, column, field string) string {
 		return fmt.Sprintf("JSONExtractString(%s, '%s')", column, field)
 	}
 	if db.IsPG {
-		if field == "claude" {
-			base := fmt.Sprintf("(CASE WHEN pg_input_is_valid(CAST(%s AS TEXT), 'jsonb') THEN CAST(%s AS TEXT) ELSE '{}' END)::jsonb", column, column)
-			return fmt.Sprintf("CASE WHEN jsonb_typeof(%s->'claude') = 'boolean' THEN %s->>'claude' END", base, base)
-		}
-		return fmt.Sprintf("((CASE WHEN pg_input_is_valid(CAST(%s AS TEXT), 'jsonb') THEN CAST(%s AS TEXT) ELSE '{}' END)::jsonb->>'%s')", column, column, field)
+		base := fmt.Sprintf("(CASE WHEN pg_input_is_valid(CAST(%s AS TEXT), 'jsonb') THEN CAST(%s AS TEXT) ELSE '{}' END)::jsonb", column, column)
+		return insightsPGJSONText(base, field)
 	}
 	if strings.Contains(db.DB.DriverName(), "sqlite") {
 		if field == "claude" {

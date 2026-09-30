@@ -167,6 +167,88 @@ func insightsContract(t *testing.T, s *UserInsightsService) {
 	if _, err := s.Report(cancelled, p); err == nil {
 		t.Fatal("cancelled request reported as zero data")
 	}
+	insightsDailyContract(t, s)
+}
+
+// Exercise several UTC days, including refund-only/error-only days. This is
+// shared by SQLite and every external main/log database pairing.
+func insightsDailyContract(t *testing.T, s *UserInsightsService) {
+	t.Helper()
+	entries := []struct {
+		at, kind, prompt, output, quota int64
+		model, other                    string
+	}{
+		{172800, 2, 10, 3, 1, "alpha", `{"cache_tokens":0,"cache_write_tokens":0}`},
+		{172801, 2, 4, 2, 2, "beta", `{"claude":true,"cache_tokens":5,"cache_creation_tokens":6}`},
+		{172802, 2, 1, 0, 0, "", `{}`},
+		{259200, 2, 7, 4, 3, "alpha", `{}`},
+		{259201, 2, 8, 5, 4, "beta", `{"usage_semantic":"anthropic","cache_tokens":2,"cache_creation_tokens_5m":3,"cache_creation_tokens_1h":4}`},
+		{345600, 6, 800, 900, 2, "alpha", `{"cache_tokens":500,"cache_write_tokens":600}`},
+		{345601, 6, 0, 0, 3, "gamma", `{}`},
+		{432000, 5, 900, 900, 0, "beta", `{}`},
+		{432000, 5, 900, 900, 0, "alpha", `{}`},
+	}
+	for i, row := range entries {
+		query := "INSERT INTO logs VALUES (?,1,?,?,?,?,0,?,?,1,'key',1,0,0,'','',?,'daily-fixture')"
+		if _, err := s.logDB.DB.Exec(s.logDB.RebindQuery(query), i+200, row.at, row.kind, row.model, row.quota, row.prompt, row.output, row.other); err != nil {
+			t.Fatalf("daily fixture: %v", err)
+		}
+	}
+	p := UserInsightsParams{UserID: 1, Window: UserInsightsWindow{StartTime: 172800, EndTime: 432001}}
+	out, err := s.Report(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.Summary
+	if m.BillingRecords != 5 || m.ErrorRecords != 2 || m.RefundRecords != 2 || m.ChargedQuota != 10 || m.RefundQuota != 5 || m.ModelsCount != 3 {
+		t.Fatalf("multi-day ledger/model counts: %+v", m)
+	}
+	if m.RawPromptTokens != 30 || m.InputTokens != 50 || m.OutputTokens != 14 || m.CacheReadTokens == nil || *m.CacheReadTokens != 7 || m.CacheWriteTokens == nil || *m.CacheWriteTokens != 13 || m.CacheReadRecords != 3 || m.CacheWriteRecords != 3 || m.TokenDetailsRecorded != 3 {
+		t.Fatalf("multi-day token coverage: %+v", m)
+	}
+	if out.Activity.ActiveDays != 3 || out.Activity.FirstRecordAt == nil || *out.Activity.FirstRecordAt != 172800 || out.Activity.LastRecordAt == nil || *out.Activity.LastRecordAt != 432000 || out.Activity.LastModel == nil || *out.Activity.LastModel != "alpha" {
+		t.Fatalf("activity excludes refunds and retains ID tie-break: %+v", out.Activity)
+	}
+	insightsAssertDailyGroups(t, out)
+	p.Window.Model = "alpha"
+	filtered, err := s.Report(context.Background(), p)
+	if err != nil || filtered.Summary.BillingRecords != 2 || filtered.Summary.InputTokens != 17 || filtered.Summary.ModelsCount != 1 || len(filtered.Models) != 1 || len(filtered.Daily) != 4 {
+		t.Fatalf("multi-day exact model filter: %+v, %v", filtered, err)
+	}
+	p.Type = "refund"
+	refunds, err := s.Report(context.Background(), p)
+	if err != nil || refunds.Summary.RefundRecords != 1 || refunds.Summary.BillingRecords != 0 || refunds.Activity.ActiveDays != 0 || refunds.Activity.FirstRecordAt != nil || refunds.Activity.LastModel != nil || refunds.Summary.CacheReadTokens != nil {
+		t.Fatalf("refund-only metrics: %+v, %v", refunds, err)
+	}
+	p.Window.Model, p.Type = "absent-model", ""
+	empty, err := s.Report(context.Background(), p)
+	if err != nil || empty.Summary == nil || empty.Activity == nil || empty.Summary.BillingRecords != 0 || empty.Summary.ModelsCount != 0 || empty.Activity.ActiveDays != 0 || empty.Summary.CacheReadTokens != nil || len(empty.Models) != 0 || len(empty.Daily) != 0 {
+		t.Fatalf("no rows must retain a zero summary and unknown cache: %+v, %v", empty, err)
+	}
+}
+
+func insightsAssertDailyGroups(t *testing.T, out *UserInsightsReport) {
+	t.Helper()
+	if len(out.Models) != 4 || len(out.Daily) != 4 || out.Models[0].ModelName != "beta" || out.Models[1].ModelName != "alpha" || out.Models[2].ModelName != "" || out.Models[3].ModelName != "gamma" {
+		t.Fatalf("model ordering: %+v", out.Models)
+	}
+	alpha, gamma := out.Models[1], out.Models[3]
+	if alpha.CacheReadTokens == nil || *alpha.CacheReadTokens != 0 || alpha.CacheWriteTokens == nil || *alpha.CacheWriteTokens != 0 || alpha.CacheReadRecords != 1 || gamma.CacheReadTokens != nil || gamma.LastRecordAt == nil || *gamma.LastRecordAt != 345601 {
+		t.Fatalf("recorded zero, unknown cache, and refund model timestamp: %+v %+v", alpha, gamma)
+	}
+	var charged, input, output, refunds int64
+	for i, day := range out.Daily {
+		if day.Date != fmt.Sprintf("1970-01-%02d", i+3) || day.ModelsCount != 2 {
+			t.Fatalf("UTC day/model count: %+v", day)
+		}
+		charged, input, output, refunds = charged+day.ChargedQuota, input+day.InputTokens, output+day.OutputTokens, refunds+day.RefundQuota
+	}
+	if charged != out.Summary.ChargedQuota || input != out.Summary.InputTokens || output != out.Summary.OutputTokens || refunds != out.Summary.RefundQuota {
+		t.Fatal("daily metrics do not reconcile with summary")
+	}
+	if out.Daily[0].InputTokens != 26 || out.Daily[1].InputTokens != 24 || out.Daily[2].RefundRecords != 2 || out.Daily[2].CacheReadTokens != nil || out.Daily[3].ErrorRecords != 2 {
+		t.Fatalf("daily metric semantics: %+v", out.Daily)
+	}
 }
 
 func TestUserInsightsSeparateDatabases(t *testing.T) {
