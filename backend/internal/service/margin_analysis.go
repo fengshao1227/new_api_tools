@@ -392,10 +392,10 @@ func (s *MarginAnalysisService) loadMarginRows(params MarginAnalysisParams) ([]m
 	return rows, nil
 }
 
-// marginJSONFieldCondition extracts the admin-only cost markers using the log
-// database's native JSON functions. String LIKE matching silently misses field
-// spacing/order changes and is especially fragile when logs are copied through
-// ClickHouse.
+// marginJSONFieldCondition extracts the admin-only cost markers. ClickHouse and
+// MySQL use their native JSON functions; PostgreSQL deliberately uses a text
+// regex because one malformed historical escape must not abort the whole
+// 30-day aggregation with SQLSTATE 22P05.
 func marginJSONFieldCondition(db *database.Manager, field, expected string) string {
 	if db.IsCH {
 		if field == "unpriced" {
@@ -404,8 +404,14 @@ func marginJSONFieldCondition(db *database.Manager, field, expected string) stri
 		return fmt.Sprintf("JSONExtractString(other, 'admin_info.%s') = '%s'", field, expected)
 	}
 	if db.IsPG {
-		path := fmt.Sprintf("NULLIF(other, '')::jsonb #>> '{admin_info,%s}'", field)
-		return fmt.Sprintf("%s = '%s'", path, expected)
+		// PostgreSQL rejects the whole query when any historical `other` value
+		// contains a malformed Unicode escape (SQLSTATE 22P05). A text regex
+		// keeps this read-only diagnostic query safe for old/corrupted rows while
+		// still tolerating normal JSON whitespace and field ordering.
+		if field == "unpriced" {
+			return fmt.Sprintf(`other ~ '"%s"[[:space:]]*:[[:space:]]*true([[:space:],}]|$)'`, field)
+		}
+		return fmt.Sprintf(`other ~ '"%s"[[:space:]]*:[[:space:]]*"%s"'`, field, expected)
 	}
 	return fmt.Sprintf("JSON_VALID(other) AND JSON_UNQUOTE(JSON_EXTRACT(other, '$.admin_info.%s')) = '%s'", field, expected)
 }

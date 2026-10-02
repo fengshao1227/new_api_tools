@@ -5,6 +5,7 @@ import { BusinessFinancePanel } from './BusinessFinancePanel'
 import { BusinessModelRanking } from './BusinessModelRanking'
 import { BusinessConversionPanel, BusinessGiftsRiskPanel } from './BusinessCustomersPanel'
 import { BusinessPricingGapsPanel, BusinessSupplyPanel, BusinessTasksPanel } from './BusinessOpsPanel'
+import { NativeDashboardPanel } from './NativeDashboardPanel'
 import { RefreshCw, Timer, ChevronDown, Languages, CalendarRange } from 'lucide-react'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
@@ -207,6 +208,8 @@ export function Dashboard() {
 
       {/* 增长:注册、付费、收入。魔尊要求放最上面;它只读 users / top_ups,不跟时间窗走。 */}
       <GrowthPanel refreshToken={lastRefreshTime?.getTime()} lang={lang} />
+
+      <NativeDashboardPanel lang={lang} refreshToken={lastRefreshTime?.getTime()} />
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t pt-6">
         <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-2">

@@ -11,6 +11,7 @@ import (
 func RegisterDashboardRoutes(r *gin.RouterGroup) {
 	g := r.Group("/dashboard")
 	{
+		g.GET("/native", GetNativeDashboard)
 		g.GET("/growth", GetGrowthMetrics)
 		g.GET("/growth/trend", GetGrowthTrend)
 		g.GET("/business/finance", GetBusinessFinance)
@@ -22,6 +23,23 @@ func RegisterDashboardRoutes(r *gin.RouterGroup) {
 		g.POST("/cache/invalidate", InvalidateDashboardCache)
 		g.GET("/ip-distribution", GetIPDistribution)
 	}
+}
+
+// GET /api/dashboard/native?period=24h
+// The native dashboard blocks are kept behind one response so the frontend
+// does not open five independent requests for the same page load.
+func GetNativeDashboard(c *gin.Context) {
+	period := c.DefaultQuery("period", "24h")
+	if _, ok := service.WindowSeconds[period]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": gin.H{"message": "Invalid period value"}})
+		return
+	}
+	data, err := service.NewDashboardService().GetNativeDashboard(period, c.Query("no_cache") == "true")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
 // GET /api/dashboard/growth

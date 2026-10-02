@@ -38,7 +38,7 @@
 
 | 模块 | 能力 |
 |---|---|
-| 经营仪表盘 | 最上面是增长（本月/累计注册、付费、收入 + 按日/按月趋势表）；下面按今天 / 7 天 / 30 天看计费额、供应商成本、实际消费收入与毛利（与毛利页同口径）、现金收入，注册转化（按来源 / 国家），赠额发放与负债、网关风控待审与扣住金额，异步任务成败与失败原因（失败率只算渠道/上游侧，内容违规、参数、素材等用户侧失败单列、不进分母，原因 Top 分两组）、退款，上游账户与未关闭告警，定价缺口（无成本表达式的模型、未定价调用），以及排除免费模型后的模型排行。风控页、上游监控、告警表不存在时对应卡片显示「无数据」。 |
+| 经营仪表盘 | 顶部保留原生资源概览（用户总数 / 24h 活跃用户、令牌总数 / 24h 活跃令牌）、24h 流量、每日和小时请求趋势、模型使用趋势；其后是增长（本月/累计注册、付费、收入 + 按日/按月趋势表）；下面按今天 / 7 天 / 30 天看计费额、供应商成本、实际消费收入与毛利（与毛利页同口径）、现金收入，注册转化（按来源 / 国家），赠额发放与负债、网关风控待审与扣住金额，异步任务成败与失败原因（失败率只算渠道/上游侧，内容违规、参数、素材等用户侧失败单列、不进分母，原因 Top 分两组）、退款，上游账户与未关闭告警，定价缺口（无成本表达式的模型、未定价调用），以及排除免费模型后的模型排行。风控页、上游监控、告警表不存在时对应卡片显示「无数据」。 |
 | 来源分析 | 按 BeatAPI 首触来源的一级渠道 / 二级明细、注册国家（`signup_country`）和赠额档位（`grant_region`，附实发赠额）拆分注册用户，并对照成功充值标记已付费、未付费和付费率；排除面板白名单（内部账号、管理员）。 |
 | 毛利分析 | 按消费日志核算已消费收入、供应商成本、赠额/免费成本和内部成本，并按日、模型、渠道、用户拆分。付费客户 = 有成功充值单或 `topup_quota > 0`（线下结算、管理员加余额的企业客户也算）；内部成本只算管理员和面板白名单——被加过余额的测试号要进白名单。成本基准读 new-api 价格簿（牌价）与成本基准，零售价按模型主分组的 `GroupRatio` 折算（主分组 = `AutoGroups` 里第一个有该模型的组），其他倍率不同的分组逐个列出；网关读失败时显示上次结果并标明。 |
 | 充值审计 | 查询全量充值记录，按状态、渠道、时间和用户维度筛选，提供财务汇总、支付分布、漏斗和异常分析。 |
@@ -161,7 +161,7 @@ npm run dev
 |---|---|
 | 健康检查 | `GET /api/health`、`GET /api/health/db` |
 | 认证 | `POST /api/auth/login`、`POST /api/auth/logout` |
-| 仪表盘 | `GET /api/dashboard/growth`、`GET /api/dashboard/growth/trend`；经营视图 `GET /api/dashboard/business/{finance,conversion,gifts-risk,tasks,pricing-gaps}?window=today\|7d\|30d`、`GET /api/dashboard/business/supply` |
+| 仪表盘 | 原生资源与 24h 活跃概览、24h 流量、每日/小时趋势和模型使用：`GET /api/dashboard/native?period=24h`；增长 `GET /api/dashboard/growth`、`GET /api/dashboard/growth/trend`；经营视图 `GET /api/dashboard/business/{finance,conversion,gifts-risk,tasks,pricing-gaps}?window=today\|7d\|30d`、`GET /api/dashboard/business/supply` |
 | 毛利分析 | `GET /api/margin-analysis`、`GET /api/margin-analysis/pricing[?refresh=true]`，核算实际收入、供应商成本、赠额成本、内部成本和全量定价场景；定价接口 45 秒内读不完网关返回 504，有上次结果时返回 200 + `stale: true` |
 | IP 分布 | `GET /api/dashboard/ip-distribution?window=1h\|6h\|24h\|7d`，按国家/地区 |
 | 充值 | `GET /api/top-ups`、`GET /api/top-ups/analytics/*` |
