@@ -57,11 +57,11 @@ func GetGrowthMetrics(c *gin.Context) {
 
 // GET /api/dashboard/growth/trend
 func GetGrowthTrend(c *gin.Context) {
-	// Anything that is not "monthly" is the 30-day series. An unrecognised
-	// value returning the default beats returning an error for a chart that
-	// only ever has two states.
+	// Anything that is not "monthly" or "all" is the 30-day series. An
+	// unrecognised value returning the default beats returning an error for a
+	// chart with a fixed set of ranges.
 	granularity := c.DefaultQuery("granularity", "daily")
-	if granularity != "monthly" {
+	if granularity != "monthly" && granularity != "all" {
 		granularity = "daily"
 	}
 	noCache := c.Query("no_cache") == "true"

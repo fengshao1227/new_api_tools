@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { useAuth } from '../contexts/AuthContext'
-import { UserPlus, Users, CreditCard, UserCheck, Wallet, DollarSign, TrendingUp, Loader2 } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { UserPlus, Users, CreditCard, UserCheck, Wallet, DollarSign, Loader2 } from 'lucide-react'
+import { Card, CardContent } from './ui/card'
 import { cn } from '../lib/utils'
 import {
   DASHBOARD_TEXT,
@@ -12,6 +12,7 @@ import {
   usd,
   usdAxis,
   type DashboardLang,
+  type GrowthRange,
 } from '../lib/dashboardI18n'
 
 interface GrowthMetrics {
@@ -34,7 +35,27 @@ interface GrowthPoint {
   revenue: number
 }
 
-type Granularity = 'daily' | 'monthly'
+type MetricKey = 'users' | 'payers' | 'revenue'
+
+const RANGES: GrowthRange[] = ['7d', '30d', 'all']
+const METRICS: MetricKey[] = ['users', 'payers', 'revenue']
+
+// 7D is the tail of the 30-day series; only "all" needs its own query.
+const RANGE_QUERY: Record<GrowthRange, string> = { '7d': 'daily', '30d': 'daily', all: 'all' }
+
+const METRIC_STYLE: Record<MetricKey, { color: string; pick: (p: GrowthPoint) => number }> = {
+  users: { color: '#6366f1', pick: (p) => p.new_users },
+  payers: { color: '#f97316', pick: (p) => p.new_payers },
+  revenue: { color: '#10b981', pick: (p) => p.revenue },
+}
+
+// ECharts draws on a canvas, which cannot resolve CSS variables: an
+// `hsl(var(--border))` there silently paints black. These read on light and
+// dark backgrounds alike.
+const AXIS_GREY = '#94a3b8'
+const GRID_GREY = 'rgba(148, 163, 184, 0.18)'
+
+const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
 
 export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lang: DashboardLang }) {
   const { token } = useAuth()
@@ -44,7 +65,8 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
 
   const [metrics, setMetrics] = useState<GrowthMetrics | null>(null)
   const [trend, setTrend] = useState<GrowthPoint[]>([])
-  const [granularity, setGranularity] = useState<Granularity>('daily')
+  const [range, setRange] = useState<GrowthRange>('30d')
+  const [metric, setMetric] = useState<MetricKey>('users')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,6 +74,7 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
     () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }),
     [token],
   )
+  const query = RANGE_QUERY[range]
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -59,7 +82,7 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
         setError(null)
         const [m, t] = await Promise.all([
           fetch(`${apiUrl}/api/dashboard/growth`, { headers, signal }),
-          fetch(`${apiUrl}/api/dashboard/growth/trend?granularity=${granularity}`, { headers, signal }),
+          fetch(`${apiUrl}/api/dashboard/growth/trend?granularity=${query}`, { headers, signal }),
         ])
         if (!m.ok || !t.ok) throw new Error(`HTTP ${m.ok ? t.status : m.status}`)
         const mj = await m.json()
@@ -73,7 +96,7 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
         setLoading(false)
       }
     },
-    [apiUrl, headers, granularity],
+    [apiUrl, headers, query],
   )
 
   useEffect(() => {
@@ -82,94 +105,128 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
     return () => controller.abort()
   }, [load, refreshToken])
 
+  const points = useMemo(() => (range === '7d' ? trend.slice(-7) : trend), [trend, range])
+
+  // The trend endpoint returns what each day added. A running total needs the
+  // count from before the window too: that is the all-time total in the
+  // metrics above minus what the window added, so the last point of every
+  // series lands exactly on the number in its metric card.
+  const series = useMemo(() => {
+    const totals: Record<MetricKey, number | undefined> = {
+      users: metrics?.total_users,
+      payers: metrics?.total_payers,
+      revenue: metrics?.total_revenue,
+    }
+    const out = {} as Record<MetricKey, { added: number; total: number; daily: number[]; points: number[] }>
+    for (const key of METRICS) {
+      const daily = points.map((p) => METRIC_STYLE[key].pick(p) || 0)
+      const added = daily.reduce((a, b) => a + b, 0)
+      let running = Math.max(0, (totals[key] ?? added) - added)
+      const cumulative = daily.map((v) => (running += v))
+      out[key] = { added, total: cumulative[cumulative.length - 1] ?? totals[key] ?? 0, daily, points: cumulative }
+    }
+    return out
+  }, [points, metrics])
+
+  const formatValue = useCallback(
+    (key: MetricKey, v: number) => (key === 'revenue' ? usdAxis.format(v) : Math.round(v).toLocaleString(locale)),
+    [locale],
+  )
+
   const option = useMemo(() => {
-    const labels = trend.map((p) => formatTrendLabel(p.date, granularity, lang))
+    const { color } = METRIC_STYLE[metric]
+    const s = series[metric]
+    const labels = points.map((p) => formatTrendLabel(p.date, 'daily', lang))
+    const last = s.points.length - 1
+    // About five dates along the axis, always including both ends.
+    const step = Math.max(1, Math.round(last / 4))
     return {
-      grid: { left: 48, right: 56, top: 24, bottom: 32, containLabel: true },
+      animationDuration: 700,
+      animationEasing: 'cubicOut',
+      grid: { left: 8, right: 8, top: 16, bottom: 8, containLabel: true },
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'line' },
-        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number; color: string }>) => {
-          const head = `<div style="font-weight:600;margin-bottom:4px">${params[0]?.axisValue ?? ''}</div>`
-          return (
-            head +
-            params
-              .map((p) => {
-                // 比的是同一个常量,不是字面量 —— 换语言后 series 名字变了,
-                // 写死中文会让金额那条悄悄退回成裸数字。
-                const value = p.seriesName === t.series.revenue ? usd.format(p.value ?? 0) : `${p.value ?? 0}`
-                return `<div style="display:flex;align-items:center;gap:6px">
-                  <span style="width:8px;height:8px;border-radius:2px;background:${p.color}"></span>
-                  <span style="flex:1">${p.seriesName}</span>
-                  <span style="font-weight:600">${value}</span>
-                </div>`
-              })
-              .join('')
-          )
+        backgroundColor: 'rgba(255, 255, 255, 0.96)',
+        borderColor: 'rgba(148, 163, 184, 0.3)',
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: '#0f172a', fontSize: 12 },
+        extraCssText: 'border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,0.08);',
+        axisPointer: { type: 'line', lineStyle: { color: AXIS_GREY, type: 'dashed', opacity: 0.6 } },
+        formatter: (params: Array<{ axisValue: string; dataIndex: number }>) => {
+          const p = params[0]
+          if (!p) return ''
+          const day = s.daily[p.dataIndex] ?? 0
+          return `<div style="color:#64748b;font-size:11px;margin-bottom:4px">${p.axisValue}</div>
+            <div style="font-size:15px;font-weight:600;font-variant-numeric:tabular-nums">${formatValue(metric, s.points[p.dataIndex] ?? 0)}</div>
+            ${day > 0 ? `<div style="color:${color};font-size:11px;margin-top:2px">${t.dayAdded(formatValue(metric, day))}</div>` : ''}`
         },
       },
-      legend: { bottom: 0, itemWidth: 10, itemHeight: 10, icon: 'roundRect' },
       xAxis: {
         type: 'category',
         data: labels,
         boundaryGap: false,
-        axisLine: { lineStyle: { color: 'hsl(var(--border))' } },
+        axisLine: { show: false },
         axisTick: { show: false },
-        axisLabel: { color: 'hsl(var(--muted-foreground))', fontSize: 11 },
-      },
-      yAxis: [
-        {
-          type: 'value',
-          minInterval: 1,
-          splitLine: { lineStyle: { type: 'dashed', color: 'hsl(var(--border))' } },
-          axisLabel: { color: 'hsl(var(--muted-foreground))', fontSize: 11 },
+        axisLabel: {
+          color: AXIS_GREY,
+          fontSize: 11,
+          margin: 14,
+          interval: (i: number) => i === 0 || i === last || (i % step === 0 && last - i > step / 2),
+          alignMinLabel: 'left',
+          alignMaxLabel: 'right',
         },
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        splitNumber: 3,
+        position: 'right',
+        axisLabel: {
+          color: AXIS_GREY,
+          fontSize: 11,
+          formatter: (v: number) => (metric === 'revenue' ? `$${compact.format(v)}` : compact.format(v)),
+        },
+        splitLine: { lineStyle: { color: GRID_GREY } },
+      },
+      series: [
         {
-          // Revenue gets its own axis. On one axis a $10 order is invisible
-          // next to 261 signups, which is exactly the day worth seeing.
-          type: 'value',
-          splitLine: { show: false },
-          axisLabel: {
-            color: 'hsl(var(--muted-foreground))',
-            fontSize: 11,
-            formatter: (v: number) => usdAxis.format(v),
+          type: 'line',
+          // A running total never dips; monotone smoothing keeps the curve
+          // from drawing a dip between two equal days.
+          smooth: 0.35,
+          smoothMonotone: 'x',
+          symbol: 'none',
+          // Mark only today's point: where the line ends is the headline.
+          data: s.points.map((v, i) =>
+            i === last
+              ? {
+                  value: v,
+                  symbol: 'circle',
+                  symbolSize: 9,
+                  itemStyle: { color, borderColor: '#fff', borderWidth: 2.5, shadowBlur: 10, shadowColor: `${color}80` },
+                }
+              : v,
+          ),
+          lineStyle: { width: 2.75, color, shadowBlur: 12, shadowColor: `${color}33`, shadowOffsetY: 6 },
+          itemStyle: { color },
+          areaStyle: {
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: `${color}33` },
+                { offset: 1, color: `${color}00` },
+              ],
+            },
           },
         },
       ],
-      series: [
-        {
-          name: t.series.newUsers,
-          type: 'line',
-          smooth: true,
-          showSymbol: false,
-          data: trend.map((p) => p.new_users),
-          itemStyle: { color: '#f97316' },
-          areaStyle: { opacity: 0.12 },
-        },
-        {
-          name: t.series.newPayers,
-          type: 'line',
-          smooth: true,
-          symbolSize: 7,
-          // Only draw a marker where someone actually started paying — a line
-          // of dots at zero reads as activity that did not happen.
-          showSymbol: true,
-          data: trend.map((p) => (p.new_payers > 0 ? p.new_payers : null)),
-          connectNulls: false,
-          itemStyle: { color: '#14b8a6' },
-        },
-        {
-          name: t.series.revenue,
-          type: 'line',
-          smooth: true,
-          showSymbol: false,
-          yAxisIndex: 1,
-          data: trend.map((p) => p.revenue),
-          itemStyle: { color: '#1e4e5f' },
-        },
-      ],
     }
-  }, [trend, granularity, lang, t])
+  }, [metric, series, points, lang, formatValue, t])
 
   if (error) {
     return (
@@ -217,73 +274,120 @@ export function GrowthPanel({ refreshToken, lang }: { refreshToken?: number; lan
         </div>
       </section>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-primary" />
-            {t.growthTrend}
-          </CardTitle>
-          <div className="flex items-center rounded-lg bg-muted p-0.5 text-sm">
-            {(['daily', 'monthly'] as Granularity[]).map((g) => (
+      <Card className="overflow-hidden rounded-2xl border-border/60 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_12px_32px_-12px_rgba(15,23,42,0.10)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-6">
+          <div>
+            <div className="text-base font-semibold tracking-tight">{t.growthTrend}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{t.cumulativeNote}</div>
+          </div>
+          <div className="flex items-center rounded-full bg-muted/70 p-1 text-xs font-medium">
+            {RANGES.map((r) => (
               <button
-                key={g}
-                onClick={() => setGranularity(g)}
+                key={r}
+                onClick={() => setRange(r)}
                 className={cn(
-                  'px-3 py-1.5 rounded-md transition-colors',
-                  granularity === g
-                    ? 'bg-background shadow-sm font-medium'
+                  'min-w-[48px] px-3 py-1.5 rounded-full transition-all',
+                  range === r
+                    ? 'bg-background text-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                {g === 'daily' ? t.last30Days : t.last12Months}
+                {t.range[r]}
               </button>
             ))}
           </div>
-        </CardHeader>
-        <CardContent>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-4 pt-5">
+          {METRICS.map((key) => {
+            const active = metric === key
+            const { color } = METRIC_STYLE[key]
+            const s = series[key]
+            return (
+              <button
+                key={key}
+                onClick={() => setMetric(key)}
+                className={cn(
+                  'relative text-left rounded-xl px-4 py-3.5 transition-colors',
+                  active ? 'bg-muted/50' : 'hover:bg-muted/30',
+                )}
+              >
+                <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                  <span
+                    className="h-2 w-2 rounded-full transition-opacity"
+                    style={{ background: color, opacity: active ? 1 : 0.35 }}
+                  />
+                  {t.cumulative[key]}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                  {loading ? (
+                    <span className="inline-block h-8 w-20 rounded bg-muted animate-pulse" />
+                  ) : (
+                    <span
+                      className={cn(
+                        'text-[28px] leading-none font-semibold tracking-tight tabular-nums transition-colors',
+                        !active && 'text-foreground/70',
+                      )}
+                    >
+                      {formatValue(key, s.total)}
+                    </span>
+                  )}
+                  {!loading && s.added > 0 && (
+                    <span className="text-xs font-medium tabular-nums" style={{ color }}>
+                      {t.deltaIn(formatValue(key, s.added), range)}
+                    </span>
+                  )}
+                </div>
+                <span
+                  className="absolute left-4 right-4 bottom-0 h-[2px] rounded-full transition-opacity"
+                  style={{ background: color, opacity: active ? 1 : 0 }}
+                />
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="px-4 pb-4 pt-2">
           {loading ? (
-            <div className="h-[320px] flex items-center justify-center text-muted-foreground">
+            <div className="h-[340px] flex items-center justify-center text-muted-foreground">
               <Loader2 className="w-5 h-5 animate-spin" />
             </div>
           ) : (
-            <ReactECharts option={option} style={{ height: 320 }} notMerge lazyUpdate />
+            <ReactECharts option={option} style={{ height: 340 }} notMerge lazyUpdate />
           )}
+        </div>
+      </Card>
 
-          <div className="mt-4 -mx-6 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-y text-muted-foreground">
-                  <th className="text-left font-normal py-2 px-6">{t.colDate}</th>
-                  <th className="text-right font-normal py-2 px-3">{t.series.newUsers}</th>
-                  <th className="text-right font-normal py-2 px-3">{t.series.newPayers}</th>
-                  <th className="text-right font-normal py-2 px-6">{t.series.revenue}</th>
+      <Card className="rounded-2xl border-border/60">
+        <div className="px-6 pt-5 pb-3 text-sm font-medium">{t.dailyBreakdown}</div>
+        <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-card">
+              <tr className="border-y text-muted-foreground">
+                <th className="text-left font-normal py-2 px-6">{t.colDate}</th>
+                <th className="text-right font-normal py-2 px-3">{t.series.newUsers}</th>
+                <th className="text-right font-normal py-2 px-3">{t.series.newPayers}</th>
+                <th className="text-right font-normal py-2 px-6">{t.series.revenue}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...points].reverse().map((p) => (
+                <tr key={p.date} className="border-b last:border-0 hover:bg-muted/40">
+                  <td className="py-2 px-6 tabular-nums">{p.date}</td>
+                  <td className={cn('py-2 px-3 text-right tabular-nums', !p.new_users && 'text-muted-foreground')}>
+                    {p.new_users}
+                  </td>
+                  <td className={cn('py-2 px-3 text-right tabular-nums', !p.new_payers && 'text-muted-foreground')}>
+                    {p.new_payers}
+                  </td>
+                  <td className={cn('py-2 px-6 text-right tabular-nums', !p.revenue && 'text-muted-foreground')}>
+                    {usd.format(p.revenue || 0)}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {[...trend].reverse().map((p) => (
-                  <tr key={p.date} className="border-b last:border-0 hover:bg-muted/40">
-                    <td className="py-2 px-6 tabular-nums">{p.date}</td>
-                    <td
-                      className={cn('py-2 px-3 text-right tabular-nums', !p.new_users && 'text-muted-foreground')}
-                    >
-                      {p.new_users}
-                    </td>
-                    <td
-                      className={cn('py-2 px-3 text-right tabular-nums', !p.new_payers && 'text-muted-foreground')}
-                    >
-                      {p.new_payers}
-                    </td>
-                    <td
-                      className={cn('py-2 px-6 text-right tabular-nums', !p.revenue && 'text-muted-foreground')}
-                    >
-                      {usd.format(p.revenue || 0)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   )

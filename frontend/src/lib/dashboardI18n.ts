@@ -81,6 +81,9 @@ export function formatTrendLabel(
   return lang === 'zh' ? `${month}月${day}日` : `${monthName} ${day}`
 }
 
+/** 增长图的时间范围。7d 取 30 天数据的最后 7 天;all 是上线第一天起按天累计。 */
+export type GrowthRange = '7d' | '30d' | 'all'
+
 const en = {
   langToggle: '中文',
   langToggleTitle: '切换为中文',
@@ -115,14 +118,25 @@ const en = {
   settledOrders: (n: number) => `${n} settled`,
   convertedFrom: (amount: string, rate: number) => ` · ${amount} of it converted at ¥${rate}/$`,
   growthTrend: 'Growth',
-  last30Days: 'Last 30 days',
-  last12Months: 'Last 12 months',
+  // 增长图的时间范围:标签短,截图里也读得清。
+  range: { '7d': '7D', '30d': '30D', all: 'All' } as Record<GrowthRange, string>,
+  cumulativeNote: 'Cumulative',
+  dailyBreakdown: 'Daily breakdown',
   colDate: 'Date',
   series: {
     newUsers: 'New signups',
     newPayers: 'First-time paying users',
     revenue: 'Revenue (USD)',
   },
+  // 增长卡片:累计值。表格仍按每天/每月的新增列。
+  cumulative: {
+    users: 'Total signups',
+    payers: 'Paying customers',
+    revenue: 'Total revenue',
+  },
+  deltaIn: (delta: string, range: GrowthRange) =>
+    range === 'all' ? `+${delta} since launch` : `+${delta} in ${range === '7d' ? '7 days' : '30 days'}`,
+  dayAdded: (delta: string) => `+${delta} that day`,
 
   // 经营视图
   biz: {
@@ -280,14 +294,23 @@ const zh: DashboardText = {
   settledOrders: (n: number) => `${n} 笔已结算`,
   convertedFrom: (amount: string, rate: number) => ` · 其中 ${amount} 按 ¥${rate}/$ 折算`,
   growthTrend: '增长趋势',
-  last30Days: '近 30 天',
-  last12Months: '近 12 个月',
+  range: { '7d': '7天', '30d': '30天', all: '全部' },
+  cumulativeNote: '累计',
+  dailyBreakdown: '每日明细',
   colDate: '日期',
   series: {
     newUsers: '新注册用户',
     newPayers: '首次付费用户',
     revenue: '收入（USD）',
   },
+  cumulative: {
+    users: '累计注册',
+    payers: '累计付费用户',
+    revenue: '累计收入',
+  },
+  deltaIn: (delta: string, range: GrowthRange) =>
+    `${range === '7d' ? '近 7 天' : range === '30d' ? '近 30 天' : '上线以来'} +${delta}`,
+  dayAdded: (delta: string) => `当天 +${delta}`,
 
   biz: {
     windowTitle: '以下各块的时间窗',

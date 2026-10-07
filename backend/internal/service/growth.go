@@ -158,8 +158,8 @@ func (s *DashboardService) GetGrowthMetrics(noCache bool) (map[string]interface{
 }
 
 // GetGrowthTrend returns new registrations, first-time paying customers and
-// revenue per bucket. granularity is "daily" (the last 30 days) or "monthly"
-// (the last 12 months).
+// revenue per bucket. granularity is "daily" (the last 30 days), "monthly"
+// (the last 12 months) or "all" (every day since growthFirstDay).
 //
 // Monthly buckets are folded from daily ones in Go rather than grouped in SQL:
 // months are not a fixed number of seconds, so the integer-arithmetic bucketing
@@ -181,11 +181,15 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 	now := time.Now()
 	tzOffset := localTZOffset()
 
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	var start time.Time
-	if monthly {
+	switch granularity {
+	case "monthly":
 		start = startOfMonth(now).AddDate(0, -11, 0)
-	} else {
-		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -29)
+	case "all":
+		start = growthFirstDay(today)
+	default:
+		start = today.AddDate(0, 0, -29)
 	}
 	startUnix := start.Unix()
 
@@ -255,7 +259,7 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 
 	// Emit every bucket in the range, including the empty ones. A series that
 	// skips quiet days draws a chart where the gaps look like activity.
-	out := make([]map[string]interface{}, 0, 366)
+	out := make([]map[string]interface{}, 0, 400)
 	if monthly {
 		for m := 0; m < 12; m++ {
 			monthStart := start.AddDate(0, m, 0)
@@ -275,8 +279,7 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 		return out, nil
 	}
 
-	for d := 0; d < 30; d++ {
-		day := start.AddDate(0, 0, d)
+	for day := start; !day.After(today); day = day.AddDate(0, 0, 1) {
 		agg := growthBucket{}
 		if b, ok := buckets[unixDayOf(day, tzOffset)]; ok {
 			agg = *b
@@ -286,6 +289,32 @@ func (s *DashboardService) GetGrowthTrend(granularity string, noCache bool) ([]m
 
 	cm.Set(cacheKey, out, 5*time.Minute)
 	return out, nil
+}
+
+// defaultGrowthStartDate is where the "all" series begins: the day BeatAPI
+// started taking signups. Activity before it (test accounts, imports, rows
+// with created_at 0) is not dropped; the chart's running total starts from the
+// all-time count minus what the series adds, so it shows up as the opening
+// value. GROWTH_START_DATE (YYYY-MM-DD) overrides it.
+const defaultGrowthStartDate = "2026-08-30"
+
+// growthFirstDay is the local day the "all" series starts on. It is never
+// later than the 30-day window's first day, so "All" never shows fewer days
+// than "30D".
+func growthFirstDay(today time.Time) time.Time {
+	fallback := today.AddDate(0, 0, -29)
+	raw := strings.TrimSpace(os.Getenv("GROWTH_START_DATE"))
+	if raw == "" {
+		raw = defaultGrowthStartDate
+	}
+	start, err := time.ParseInLocation("2006-01-02", raw, today.Location())
+	if err != nil {
+		start, _ = time.ParseInLocation("2006-01-02", defaultGrowthStartDate, today.Location())
+	}
+	if start.After(fallback) {
+		return fallback
+	}
+	return start
 }
 
 type growthBucket struct {
